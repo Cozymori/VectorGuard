@@ -1,0 +1,46 @@
+# VectorGuard Fast Path 기본 규칙
+# action: block | alert | log | allow
+
+# ── 민감 파일 접근 차단 ───────────────────────────────────────
+[[rules]]
+name   = "block-shadow-access"
+action = "block"
+match_path_prefix = ["/etc/shadow", "/etc/gshadow", "/etc/sudoers"]
+
+[[rules]]
+name   = "block-ssh-key-access"
+action = "block"
+match_path_prefix = ["/root/.ssh/", "/home/"]
+match_exec_path   = ["/bin/bash", "/bin/sh", "/usr/bin/python3"]
+
+# ── 서비스 프로세스의 쉘 실행 탐지 ──────────────────────────
+[[rules]]
+name   = "alert-webserver-shell"
+action = "alert"
+match_process   = ["nginx", "apache2", "httpd", "php-fpm"]
+match_exec_path = ["/bin/sh", "/bin/bash", "/bin/dash"]
+
+[[rules]]
+name   = "alert-db-shell"
+action = "alert"
+match_process   = ["postgres", "mysqld", "mongod"]
+match_exec_path = ["/bin/sh", "/bin/bash"]
+
+# ── 의심스러운 아웃바운드 포트 ───────────────────────────────
+[[rules]]
+name       = "alert-suspicious-port"
+action     = "alert"
+match_port = [4444, 1337, 31337, 9001, 8888, 6666]
+
+# ── root의 네트워크 도구 실행 ────────────────────────────────
+[[rules]]
+name          = "alert-root-nettools"
+action        = "alert"
+match_uid     = 0
+match_exec_path = ["/usr/bin/wget", "/usr/bin/curl", "/usr/bin/nc", "/usr/bin/ncat"]
+
+# ── 커널 모듈 로드 탐지 ──────────────────────────────────────
+[[rules]]
+name          = "alert-insmod"
+action        = "alert"
+match_exec_path = ["/sbin/insmod", "/sbin/modprobe", "/usr/sbin/insmod"]

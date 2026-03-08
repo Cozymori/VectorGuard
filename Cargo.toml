@@ -1,0 +1,12 @@
+[workspace]
+members = [
+    "vectorguard",
+    "vectorguard-ebpf",
+    "vectorguard-common",
+]
+# vectorguard-ebpf는 bpfel-unknown-none 타겟 전용이므로 호스트 빌드에서 제외
+default-members = [
+    "vectorguard",
+    "vectorguard-common",
+]
+resolver = "2"

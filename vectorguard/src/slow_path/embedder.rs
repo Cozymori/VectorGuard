@@ -145,3 +145,86 @@ fn event_to_text(event: &NormalizedEvent) -> String {
     };
     format!("{} uid={} proc={}", kind, event.process.uid, event.process.binary)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::*;
+
+    fn make_event(event_type: EventType, uid: u32, binary: &str) -> NormalizedEvent {
+        NormalizedEvent {
+            id: 0,
+            timestamp: 0,
+            source: EventSource::NativeEbpf,
+            process: ProcessInfo {
+                pid: 1, ppid: 0, uid, gid: 0,
+                binary: binary.to_string(),
+                args: vec![],
+                cwd: String::new(),
+            },
+            parent:     None,
+            event_type,
+            severity:   Severity::Info,
+            action:     Action::Allowed,
+            k8s:        None,
+            raw:        serde_json::Value::Null,
+        }
+    }
+
+    #[test]
+    fn vector_has_correct_dimension() {
+        let ev = make_event(EventType::Exec, 1000, "nginx");
+        let v = local_embed(&ev);
+        assert_eq!(v.len(), VECTOR_DIM);
+    }
+
+    #[test]
+    fn vector_is_unit_normalized() {
+        let ev = make_event(EventType::Exec, 1000, "nginx");
+        let v = local_embed(&ev);
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-5, "norm = {}", norm);
+    }
+
+    #[test]
+    fn different_event_types_produce_different_vectors() {
+        let exec_ev  = make_event(EventType::Exec, 0, "bash");
+        let file_ev  = make_event(
+            EventType::FileAccess {
+                path: "/etc/passwd".into(),
+                flags: FileFlags { read: true, write: false, execute: false },
+            },
+            0, "bash",
+        );
+        let exec_v = local_embed(&exec_ev);
+        let file_v = local_embed(&file_ev);
+        assert_ne!(exec_v, file_v);
+    }
+
+    #[test]
+    fn same_event_produces_same_vector() {
+        let ev = make_event(EventType::Exec, 500, "sshd");
+        let v1 = local_embed(&ev);
+        let v2 = local_embed(&ev);
+        assert_eq!(v1, v2);
+    }
+
+    #[test]
+    fn cosine_similarity_identical_events_is_one() {
+        let ev = make_event(EventType::Exec, 0, "nginx");
+        let v = local_embed(&ev);
+        let dot: f32 = v.iter().map(|x| x * x).sum();
+        // unit vectors → dot product == cosine similarity == 1.0
+        assert!((dot - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn root_uid_sets_uid_feature() {
+        let root_ev = make_event(EventType::Exec, 0,    "bash");
+        let user_ev = make_event(EventType::Exec, 1000, "bash");
+        let root_v = local_embed(&root_ev);
+        let user_v = local_embed(&user_ev);
+        // vectors differ because uid slot differs
+        assert_ne!(root_v, user_v);
+    }
+}

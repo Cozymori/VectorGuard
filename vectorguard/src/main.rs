@@ -5,6 +5,7 @@ mod event;
 mod adapter;
 mod fast_path;
 mod hotreload;
+mod scope;
 mod slow_path;
 mod tui;
 
@@ -77,20 +78,14 @@ async fn main() -> Result<()> {
     }
     drop(raw_tx); // spawned tasks hold their own copies
 
-    // ── Fast Path Initialization ──────────────────────────────
-    let fast_path = {
-        let cfg_snap = cfg.read().await;
-        fast_path::FastPath::new(&cfg_snap.fast_path)
-    };
-
-    // ── Slow Path Initialization ──────────────────────────────
-    let slow_path = {
-        let cfg_snap = cfg.read().await;
-        slow_path::SlowPath::new(&cfg_snap.slow_path).await
-    };
+    // ── Pipeline Component Initialization ────────────────────
+    let cfg_snap = cfg.read().await.clone();
+    let scope_filter = scope::ScopeFilter::new(&cfg_snap.scope);
+    let fast_path    = fast_path::FastPath::new(&cfg_snap.fast_path);
+    let slow_path    = slow_path::SlowPath::new(&cfg_snap.slow_path).await;
 
     // ── Event Processing Pipeline Task ────────────────────────
-    tokio::spawn(run_pipeline(raw_rx, proc_tx, fast_path, slow_path));
+    tokio::spawn(run_pipeline(raw_rx, proc_tx, scope_filter, fast_path, slow_path));
 
     // ── Run TUI ───────────────────────────────────────────────
     let config_text = std::fs::read_to_string(CONFIG_PATH).unwrap_or_default();
@@ -98,18 +93,24 @@ async fn main() -> Result<()> {
     tui::run(app, Some(proc_rx)).await
 }
 
-/// Event processing pipeline: Fast Path → Slow Path → forward to TUI channel
+/// Event processing pipeline: Scope filter → Fast Path → Slow Path → TUI
 async fn run_pipeline(
-    mut raw_rx:  mpsc::Receiver<NormalizedEvent>,
-    proc_tx:     mpsc::Sender<NormalizedEvent>,
-    fast_path:   fast_path::FastPath,
-    slow_path:   slow_path::SlowPath,
+    mut raw_rx:   mpsc::Receiver<NormalizedEvent>,
+    proc_tx:      mpsc::Sender<NormalizedEvent>,
+    scope_filter: scope::ScopeFilter,
+    fast_path:    fast_path::FastPath,
+    slow_path:    slow_path::SlowPath,
 ) {
     while let Some(mut ev) = raw_rx.recv().await {
-        // Phase 2: Fast Path (synchronous, rule evaluation)
+        // Scope filter: skip events from unmonitored processes
+        if !scope_filter.allows(&ev) {
+            continue;
+        }
+
+        // Fast Path: synchronous rule evaluation
         fast_path.evaluate(&mut ev);
 
-        // Phase 3: Slow Path (asynchronous, vector similarity)
+        // Slow Path: async vector similarity anomaly detection
         slow_path.analyze(&mut ev).await;
 
         if proc_tx.send(ev).await.is_err() {

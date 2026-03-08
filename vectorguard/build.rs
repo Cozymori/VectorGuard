@@ -1,5 +1,13 @@
 fn main() {
-    // eBPF compilation only makes sense when building for Linux
+    // ── Compile Tetragon protobuf (all platforms) ──────────
+    println!("cargo:rerun-if-changed=proto/tetragon.proto");
+
+    tonic_build::configure()
+        .build_server(false)
+        .compile_protos(&["proto/tetragon.proto"], &["proto"])
+        .expect("Failed to compile Tetragon proto");
+
+    // ── Compile eBPF (Linux only) ──────────────────────────
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     if target_os != "linux" {
         return;

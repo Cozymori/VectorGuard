@@ -14,8 +14,8 @@ use super::Adapter;
 
 static EVENT_ID: AtomicU64 = AtomicU64::new(0);
 
-/// Falco JSON 로그 파일 tail adapter
-/// Falco 설정: `json_output: true`, `json_include_output_property: true`
+/// Falco JSON log file tail adapter
+/// Falco config: `json_output: true`, `json_include_output_property: true`
 pub struct FalcoAdapter {
     log_path: String,
     reader:   Option<BufReader<tokio::fs::File>>,
@@ -32,7 +32,7 @@ impl FalcoAdapter {
     async fn ensure_reader(&mut self) -> Result<&mut BufReader<tokio::fs::File>> {
         if self.reader.is_none() {
             let file = tokio::fs::File::open(&self.log_path).await?;
-            // 파일 끝으로 seek → 새로운 이벤트만 수신
+            // Seek to end of file → receive only new events
             use tokio::io::AsyncSeekExt;
             let mut file = file;
             file.seek(std::io::SeekFrom::End(0)).await?;
@@ -50,7 +50,7 @@ impl Adapter for FalcoAdapter {
                 Ok(r)  => r,
                 Err(e) => {
                     sleep(Duration::from_secs(1)).await;
-                    return Err(anyhow::anyhow!("Falco 로그 파일 열기 실패: {}", e));
+                    return Err(anyhow::anyhow!("Failed to open Falco log file: {}", e));
                 }
             };
 
@@ -58,7 +58,7 @@ impl Adapter for FalcoAdapter {
             let n = reader.read_line(&mut line).await?;
 
             if n == 0 {
-                // EOF → 새 데이터 대기
+                // EOF → wait for new data
                 sleep(Duration::from_millis(200)).await;
                 continue;
             }
@@ -71,7 +71,7 @@ impl Adapter for FalcoAdapter {
             match parse_falco_json(line) {
                 Ok(ev)  => return Ok(ev),
                 Err(e)  => {
-                    debug!("Falco 이벤트 파싱 스킵: {}", e);
+                    debug!("Skipping Falco event parse error: {}", e);
                     continue;
                 }
             }
@@ -83,8 +83,8 @@ impl Adapter for FalcoAdapter {
     }
 }
 
-/// Falco JSON 이벤트 파싱
-/// 예시: {"time":"...","rule":"...","priority":"Warning","output_fields":{...}}
+/// Parse a Falco JSON event
+/// Example: {"time":"...","rule":"...","priority":"Warning","output_fields":{...}}
 fn parse_falco_json(line: &str) -> Result<NormalizedEvent> {
     let v: serde_json::Value = serde_json::from_str(line)?;
     let fields = &v["output_fields"];
@@ -97,7 +97,7 @@ fn parse_falco_json(line: &str) -> Result<NormalizedEvent> {
     let ppid   = fields["proc.ppid"].as_u64().unwrap_or(0) as u32;
     let uid    = fields["user.uid"].as_u64().unwrap_or(65534) as u32;
 
-    // 이벤트 타입 판별
+    // Determine event type
     let evt_type = fields["evt.type"].as_str().unwrap_or("");
     let event_type = match evt_type {
         "execve" | "execveat" => EventType::Exec,
@@ -122,7 +122,7 @@ fn parse_falco_json(line: &str) -> Result<NormalizedEvent> {
                 proto: Proto::Tcp,
             }
         }
-        _ => EventType::Exec, // unknown → Exec로 분류
+        _ => EventType::Exec, // unknown → classify as Exec
     };
 
     Ok(NormalizedEvent {

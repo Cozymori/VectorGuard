@@ -13,17 +13,17 @@ impl EventHandler {
         Self { tick_ms }
     }
 
-    /// 키 이벤트 처리. true 반환 시 루프 종료.
-    /// tokio::select! 내에서 호출되므로 짧은 timeout 사용
+    /// Handle key events. Returns true to exit the loop.
+    /// Uses a short timeout because it is called inside tokio::select!
     pub async fn handle(&mut self, app: &mut App) -> Result<bool> {
-        // 짧게 폴링 — tokio::select!가 다른 브랜치와 병행 처리
+        // Poll briefly — tokio::select! handles concurrency with other branches
         let available = tokio::task::spawn_blocking(|| {
             event::poll(Duration::from_millis(0))
         })
         .await??;
 
         if !available {
-            // 이벤트 없음 → 짧게 yield 후 반환
+            // No event → yield briefly and return
             tokio::time::sleep(Duration::from_millis(self.tick_ms)).await;
             return Ok(false);
         }

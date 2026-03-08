@@ -3,7 +3,7 @@ use std::fs;
 
 use crate::event::{Action, EventType, NormalizedEvent};
 
-/// 규칙 파일(.toml) 최상위 구조
+/// Top-level structure of a rule file (.toml)
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct RuleSet {
     #[serde(default)]
@@ -15,24 +15,24 @@ pub struct Rule {
     pub name:   String,
     pub action: RuleAction,
 
-    // 조건 — 설정된 조건들이 모두 AND로 매칭되어야 함
-    /// 프로세스 바이너리명 glob 패턴 (예: "nginx", "py*")
+    // Conditions — all configured conditions must match (AND logic)
+    /// Glob pattern for process binary name (e.g. "nginx", "py*")
     #[serde(default)]
     pub match_process: Vec<String>,
 
-    /// FileAccess 이벤트의 경로 접두사 (예: "/etc/shadow")
+    /// Path prefix for FileAccess events (e.g. "/etc/shadow")
     #[serde(default)]
     pub match_path_prefix: Vec<String>,
 
-    /// Exec 이벤트의 실행파일 경로 접두사 (예: "/bin/sh")
+    /// Executable path prefix for Exec events (e.g. "/bin/sh")
     #[serde(default)]
     pub match_exec_path: Vec<String>,
 
-    /// Network 이벤트의 목적지 포트
+    /// Destination port for Network events
     #[serde(default)]
     pub match_port: Vec<u16>,
 
-    /// UID 일치 (0 = root)
+    /// UID match (0 = root)
     pub match_uid: Option<u32>,
 }
 
@@ -57,8 +57,8 @@ impl RuleAction {
 }
 
 impl RuleSet {
-    /// rules_path 디렉터리에서 *.toml 파일을 모두 로드
-    /// 파일이 없으면 내장 기본 규칙을 사용
+    /// Load all *.toml files from the rules_path directory
+    /// Falls back to built-in default rules if no files are found
     pub fn load_dir(path: &str) -> Self {
         let mut all_rules: Vec<Rule> = Vec::new();
 
@@ -69,7 +69,7 @@ impl RuleSet {
                     if let Ok(content) = fs::read_to_string(&p) {
                         match toml::from_str::<RuleSet>(&content) {
                             Ok(rs) => all_rules.extend(rs.rules),
-                            Err(e) => tracing::warn!("규칙 파일 파싱 실패 {:?}: {}", p, e),
+                            Err(e) => tracing::warn!("Failed to parse rule file {:?}: {}", p, e),
                         }
                     }
                 }
@@ -83,7 +83,7 @@ impl RuleSet {
         RuleSet { rules: all_rules }
     }
 
-    /// 첫 번째 매칭 규칙의 Action 반환 (없으면 None)
+    /// Return the Action of the first matching rule, or None if no rule matches
     pub fn evaluate(&self, event: &NormalizedEvent) -> Option<Action> {
         self.rules
             .iter()
@@ -145,7 +145,7 @@ impl RuleSet {
 
 impl Rule {
     fn matches(&self, event: &NormalizedEvent) -> bool {
-        // 프로세스명 glob 필터
+        // Process name glob filter
         if !self.match_process.is_empty() {
             let binary = &event.process.binary;
             let hit = self.match_process.iter().any(|pat| {
@@ -158,14 +158,14 @@ impl Rule {
             }
         }
 
-        // UID 필터
+        // UID filter
         if let Some(uid) = self.match_uid {
             if event.process.uid != uid {
                 return false;
             }
         }
 
-        // 포트 필터 (Network 이벤트만 해당)
+        // Port filter (Network events only)
         if !self.match_port.is_empty() {
             match &event.event_type {
                 EventType::Network { port, .. } => {
@@ -177,7 +177,7 @@ impl Rule {
             }
         }
 
-        // 파일 경로 접두사 필터 (FileAccess 이벤트만 해당)
+        // File path prefix filter (FileAccess events only)
         if !self.match_path_prefix.is_empty() {
             match &event.event_type {
                 EventType::FileAccess { path, .. } => {
@@ -190,7 +190,7 @@ impl Rule {
             }
         }
 
-        // Exec 경로 접두사 필터 (Exec 이벤트만 해당)
+        // Exec path prefix filter (Exec events only)
         if !self.match_exec_path.is_empty() {
             match &event.event_type {
                 EventType::Exec => {

@@ -6,7 +6,7 @@ use tracing::{info, warn};
 
 use crate::config::Config;
 
-/// config.toml 변경 감지 → 새 Config 전달
+/// Watch config.toml for changes and apply the new Config
 pub async fn watch(
     config_path: &str,
     config: Arc<RwLock<Config>>,
@@ -25,18 +25,18 @@ pub async fn watch(
     )?;
 
     watcher.watch(Path::new(config_path), RecursiveMode::NonRecursive)?;
-    info!("핫 리로드 감시 시작: {}", config_path);
+    info!("Hot reload watch started: {}", config_path);
 
-    // watcher가 드랍되지 않도록 task 안에 유지
+    // Keep watcher alive inside the task so it is not dropped
     tokio::spawn(async move { let _w = watcher; std::future::pending::<()>().await });
 
     while rx.recv().await.is_some() {
         match Config::load(config_path) {
             Ok(new_cfg) => {
                 *config.write().await = new_cfg;
-                info!("config.toml 리로드 완료");
+                info!("config.toml reloaded successfully");
             }
-            Err(e) => warn!("config.toml 리로드 실패 (기존 설정 유지): {}", e),
+            Err(e) => warn!("Failed to reload config.toml (keeping existing config): {}", e),
         }
     }
 

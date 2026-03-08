@@ -3,7 +3,7 @@ name = "vectorguard-common"
 version = "0.1.0"
 edition = "2024"
 
-# no_std 지원: eBPF 크레이트에서도 사용하기 위해
+# no_std support: shared with the eBPF crate
 [features]
 default = ["user"]
 user = ["serde"]

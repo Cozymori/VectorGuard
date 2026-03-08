@@ -15,8 +15,8 @@ use super::Adapter;
 
 static EVENT_ID: AtomicU64 = AtomicU64::new(0);
 
-/// auditd 텍스트 로그 tail adapter
-/// /var/log/audit/audit.log 형식 파싱
+/// auditd text log tail adapter
+/// Parses /var/log/audit/audit.log format
 pub struct AuditdAdapter {
     log_path: String,
     reader:   Option<BufReader<tokio::fs::File>>,
@@ -50,7 +50,7 @@ impl Adapter for AuditdAdapter {
                 Ok(r)  => r,
                 Err(e) => {
                     sleep(Duration::from_secs(1)).await;
-                    return Err(anyhow::anyhow!("auditd 로그 파일 열기 실패: {}", e));
+                    return Err(anyhow::anyhow!("Failed to open auditd log file: {}", e));
                 }
             };
 
@@ -67,7 +67,7 @@ impl Adapter for AuditdAdapter {
                 continue;
             }
 
-            // SYSCALL 레코드만 이벤트로 변환
+            // Only convert SYSCALL records to events
             if !line.contains("type=SYSCALL") {
                 continue;
             }
@@ -75,7 +75,7 @@ impl Adapter for AuditdAdapter {
             match parse_auditd_syscall(line) {
                 Ok(ev)  => return Ok(ev),
                 Err(e)  => {
-                    debug!("auditd 파싱 스킵: {}", e);
+                    debug!("Skipping auditd parse error: {}", e);
                     continue;
                 }
             }
@@ -87,8 +87,8 @@ impl Adapter for AuditdAdapter {
     }
 }
 
-/// auditd SYSCALL 레코드 파싱
-/// 형식: type=SYSCALL msg=audit(...): arch=... syscall=N ... pid=N ppid=N uid=N ... comm="..." exe="..."
+/// Parse an auditd SYSCALL record
+/// Format: type=SYSCALL msg=audit(...): arch=... syscall=N ... pid=N ppid=N uid=N ... comm="..." exe="..."
 fn parse_auditd_syscall(line: &str) -> Result<NormalizedEvent> {
     let fields = parse_kv(line);
 
@@ -100,7 +100,7 @@ fn parse_auditd_syscall(line: &str) -> Result<NormalizedEvent> {
     let comm = fields.get("comm").map(|s| unquote(s)).unwrap_or_default();
     let exe  = fields.get("exe").map(|s| unquote(s)).unwrap_or_default();
 
-    // syscall 번호로 이벤트 타입 결정 (x86_64 기준)
+    // Determine event type from syscall number (x86_64)
     let event_type = match syscall_nr {
         59 | 322 => EventType::Exec, // execve, execveat
         2 | 257  => EventType::FileAccess { // open, openat
@@ -140,7 +140,7 @@ fn parse_auditd_syscall(line: &str) -> Result<NormalizedEvent> {
     })
 }
 
-/// auditd 로그 라인의 key=value 쌍 파싱
+/// Parse key=value pairs from an auditd log line
 fn parse_kv(line: &str) -> HashMap<String, String> {
     let mut map = HashMap::new();
     for token in line.split_whitespace() {

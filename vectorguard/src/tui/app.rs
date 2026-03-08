@@ -35,7 +35,7 @@ impl Tab {
     }
 }
 
-/// TUI 전체 상태
+/// Overall TUI state
 pub struct App {
     pub state:         AppState,
     pub active_tab:    Tab,
@@ -43,11 +43,11 @@ pub struct App {
     // Dashboard
     pub stats:         Stats,
 
-    // Events 탭 — 최근 이벤트 목록
+    // Events tab — recent event list
     pub events:        Vec<EventRow>,
     pub event_scroll:  usize,
 
-    // Config 탭 — 설정 뷰어 (읽기 전용, 편집은 vi로)
+    // Config tab — config viewer (read-only; edit with vi)
     pub config_text:   String,
 }
 
@@ -96,7 +96,7 @@ impl App {
         }
     }
 
-    /// 새 이벤트 수신 시 호출 (최대 500개 유지)
+    /// Called when a new event is received (keeps at most 500 events)
     pub fn push_event(&mut self, ev: &NormalizedEvent) {
         self.stats.total_events += 1;
 

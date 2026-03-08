@@ -16,8 +16,8 @@ use tokio::sync::mpsc;
 
 use crate::event::NormalizedEvent;
 
-/// TUI 진입점 — 터미널 초기화 → 메인 루프 → 복원
-/// event_rx: 처리된 이벤트 수신 채널 (None이면 이벤트 없이 실행)
+/// TUI entry point — initialize terminal → main loop → restore terminal
+/// event_rx: channel for receiving processed events (if None, runs without events)
 pub async fn run(app: App, mut event_rx: Option<mpsc::Receiver<NormalizedEvent>>) -> Result<()> {
     enable_raw_mode()?;
     execute!(stdout(), EnterAlternateScreen)?;
@@ -38,17 +38,17 @@ async fn run_loop(
     mut app: App,
     event_rx: &mut Option<mpsc::Receiver<NormalizedEvent>>,
 ) -> Result<()> {
-    let mut key_handler = EventHandler::new(50); // 50ms 폴링
+    let mut key_handler = EventHandler::new(50); // 50ms polling
 
     loop {
         terminal.draw(|f| render::draw(f, &app))?;
 
         tokio::select! {
-            // 키보드 이벤트 처리
+            // Handle keyboard events
             quit = key_handler.handle(&mut app) => {
                 if quit? { break; }
             }
-            // 이벤트 스트림 수신 (None이면 절대 ready되지 않음)
+            // Receive event stream (never becomes ready if None)
             Some(ev) = async {
                 if let Some(rx) = event_rx.as_mut() { rx.recv().await } else { None }
             } => {

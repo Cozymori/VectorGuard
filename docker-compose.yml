@@ -1,0 +1,23 @@
+services:
+  vectorguard:
+    build: .
+    privileged: true                     # eBPF 로드에 필요
+    pid: host                            # 호스트 PID 네임스페이스 접근
+    network_mode: host
+    volumes:
+      - /sys/kernel/debug:/sys/kernel/debug:ro
+      - /sys/fs/bpf:/sys/fs/bpf
+      - ./vectorguard/config.toml:/etc/vectorguard/config.toml
+    environment:
+      - RUST_LOG=info
+
+  # Slow Path용 Vector DB
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+volumes:
+  qdrant_data:

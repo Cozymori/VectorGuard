@@ -1,0 +1,12 @@
+[package]
+name = "vectorguard-common"
+version = "0.1.0"
+edition = "2024"
+
+# no_std 지원: eBPF 크레이트에서도 사용하기 위해
+[features]
+default = ["user"]
+user = ["serde"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"], optional = true }

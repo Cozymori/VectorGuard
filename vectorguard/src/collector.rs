@@ -1,0 +1,192 @@
+#![cfg(target_os = "linux")]
+
+use anyhow::{Context, Result};
+use aya::{maps::RingBuf, programs::TracePoint, Ebpf};
+use bytes::BytesMut;
+use std::{
+    net::Ipv4Addr,
+    sync::atomic::{AtomicU64, Ordering},
+};
+use tokio::io::unix::AsyncFd;
+use tracing::{debug, warn};
+
+use crate::event::{
+    Action, Direction, EventSource, EventType, FileFlags, NormalizedEvent,
+    ProcessInfo, Proto, Severity,
+};
+use vectorguard_common::{EventKind, RawEvent};
+
+static EVENT_ID: AtomicU64 = AtomicU64::new(0);
+
+/// eBPF 프로그램 로드 + 트레이스포인트 연결
+pub fn load_ebpf() -> Result<Ebpf> {
+    // 컴파일된 eBPF 오브젝트를 바이너리에 포함 (빌드 스크립트로 생성)
+    let data = include_bytes!("../../target/bpfel-unknown-none/release/vectorguard-ebpf");
+    let mut ebpf = Ebpf::load(data).context("eBPF 로드 실패")?;
+
+    attach_tracepoint(&mut ebpf, "syscalls", "sys_enter_execve", "handle_exec")?;
+    attach_tracepoint(&mut ebpf, "syscalls", "sys_enter_openat", "handle_file_open")?;
+    attach_tracepoint(&mut ebpf, "syscalls", "sys_enter_connect", "handle_net_connect")?;
+
+    Ok(ebpf)
+}
+
+fn attach_tracepoint(ebpf: &mut Ebpf, category: &str, name: &str, prog: &str) -> Result<()> {
+    let program: &mut TracePoint = ebpf
+        .program_mut(prog)
+        .with_context(|| format!("프로그램 {} 없음", prog))?
+        .try_into()?;
+
+    program.load()?;
+    program
+        .attach(category, name)
+        .with_context(|| format!("트레이스포인트 {}/{} attach 실패", category, name))?;
+
+    Ok(())
+}
+
+/// Ring Buffer를 비동기로 폴링하여 NormalizedEvent 생성
+pub async fn run_collector(
+    ebpf: &mut Ebpf,
+    tx: tokio::sync::mpsc::Sender<NormalizedEvent>,
+) -> Result<()> {
+    let ring_buf = ebpf.map_mut("EVENTS").context("EVENTS 맵 없음")?;
+    let ring_buf = RingBuf::try_from(ring_buf)?;
+    let mut async_fd = AsyncFd::new(ring_buf)?;
+
+    loop {
+        let mut guard = async_fd.readable_mut().await?;
+        let rb = guard.get_inner_mut();
+
+        while let Some(item) = rb.next() {
+            let raw = parse_raw_event(&item);
+            match raw {
+                Ok(event) => {
+                    if tx.send(event).await.is_err() {
+                        return Ok(()); // 수신자 종료
+                    }
+                }
+                Err(e) => warn!("이벤트 파싱 실패: {}", e),
+            }
+        }
+
+        guard.clear_ready();
+    }
+}
+
+fn parse_raw_event(data: &[u8]) -> Result<NormalizedEvent> {
+    if data.len() < std::mem::size_of::<RawEvent>() {
+        anyhow::bail!("이벤트 크기 부족: {}bytes", data.len());
+    }
+
+    let raw = unsafe { &*(data.as_ptr() as *const RawEvent) };
+
+    let process = ProcessInfo {
+        pid:    raw.pid,
+        ppid:   raw.ppid,
+        uid:    raw.uid,
+        gid:    raw.gid,
+        binary: raw.comm_str().to_string(),
+        args:   vec![],
+        cwd:    String::new(),
+    };
+
+    let (event_type, severity) = parse_event_type(raw)?;
+
+    Ok(NormalizedEvent {
+        id:         EVENT_ID.fetch_add(1, Ordering::Relaxed),
+        timestamp:  raw.timestamp,
+        source:     EventSource::NativeEbpf,
+        process,
+        parent:     None,
+        event_type,
+        severity,
+        action:     Action::Allowed,
+        k8s:        None,
+        raw:        serde_json::Value::Null,
+    })
+}
+
+fn parse_event_type(raw: &RawEvent) -> Result<(EventType, Severity)> {
+    match raw.kind {
+        EventKind::Exec => {
+            let filename = unsafe {
+                let p = &raw.payload.exec;
+                let end = p.filename.iter().position(|&b| b == 0).unwrap_or(256);
+                std::str::from_utf8(&p.filename[..end])
+                    .unwrap_or("<invalid>")
+                    .to_string()
+            };
+            debug!("exec: {}", filename);
+            Ok((EventType::Exec, Severity::Info))
+        }
+
+        EventKind::FileOpen => {
+            let (path, flags) = unsafe {
+                let p = &raw.payload.file;
+                let end = p.path.iter().position(|&b| b == 0).unwrap_or(256);
+                let path = std::str::from_utf8(&p.path[..end])
+                    .unwrap_or("<invalid>")
+                    .to_string();
+                (path, p.flags)
+            };
+
+            let severity = if is_sensitive_path(&path) {
+                Severity::High
+            } else {
+                Severity::Info
+            };
+
+            Ok((
+                EventType::FileAccess {
+                    path,
+                    flags: FileFlags {
+                        read:    flags & 0x1 == 0, // O_RDONLY=0
+                        write:   flags & 0x1 != 0 || flags & 0x2 != 0,
+                        execute: false,
+                    },
+                },
+                severity,
+            ))
+        }
+
+        EventKind::NetConnect => {
+            let (dst_ip, dst_port) = unsafe {
+                let p = &raw.payload.net;
+                let ip = Ipv4Addr::from(u32::from_be(p.dst_ip));
+                (ip, p.dst_port)
+            };
+
+            Ok((
+                EventType::Network {
+                    direction: Direction::Outbound,
+                    remote_ip: std::net::IpAddr::V4(dst_ip),
+                    port:      dst_port,
+                    proto:     Proto::Tcp,
+                },
+                Severity::Info,
+            ))
+        }
+
+        EventKind::Privilege => Ok((
+            EventType::Privilege {
+                syscall:    "unknown".to_string(),
+                capability: None,
+            },
+            Severity::High,
+        )),
+    }
+}
+
+/// 민감한 경로 접근 여부 판단
+fn is_sensitive_path(path: &str) -> bool {
+    const SENSITIVE: &[&str] = &[
+        "/etc/shadow",
+        "/etc/passwd",
+        "/etc/sudoers",
+        "/root/",
+        "/proc/",
+        "/sys/kernel/",
+    ];
+    SENSITIVE.iter().any(|s| path.starts_with(s))
+}

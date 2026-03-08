@@ -1,0 +1,17 @@
+[package]
+name = "vectorguard-ebpf"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+vectorguard-common = { path = "../vectorguard-common", default-features = false }
+aya-ebpf = "0.1"
+aya-log-ebpf = "0.1"
+
+[[bin]]
+name = "vectorguard-ebpf"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true

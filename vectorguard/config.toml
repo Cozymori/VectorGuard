@@ -1,0 +1,48 @@
+[system]
+log_level = "info"       # debug | info | warn | error
+hot_reload = true
+
+# ── 감시 대상 ────────────────────────────────────────────────
+[scope]
+targets = ["nginx", "postgres", "sshd"]   # glob 지원 예정
+exclude_namespaces = ["kube-system"]       # k8s 전용, 베어메탈은 무시
+
+# ── Adapter 선택 ─────────────────────────────────────────────
+[adapter]
+backend = "tetragon"   # tetragon | falco | auditd | native_ebpf
+
+[adapter.tetragon]
+endpoint = "http://localhost:54321"
+
+[adapter.falco]
+log_path = "/var/log/falco/events.json"
+
+[adapter.auditd]
+log_path = "/var/log/audit/audit.log"
+
+# ── Fast Path ────────────────────────────────────────────────
+[fast_path]
+enabled = true
+rules_path = "../rules"            # 개발 시: 리포 내 rules/, 배포 시: /etc/vectorguard/rules/
+default_action = "block"   # block | alert | log
+
+# ── Slow Path ────────────────────────────────────────────────
+[slow_path]
+enabled = true
+time_window_secs = 60
+similarity_threshold = 0.85
+
+[slow_path.embedder]
+backend = "local"          # local | openai | claude
+model = "nomic-embed-text"
+api_key_env = ""
+
+[slow_path.vectordb]
+backend = "qdrant"         # qdrant | usearch
+url = "http://localhost:6333"
+collection = "behaviors"
+
+# ── TUI ─────────────────────────────────────────────────────
+[tui]
+refresh_rate_ms = 200
+theme = "dark"             # dark | light

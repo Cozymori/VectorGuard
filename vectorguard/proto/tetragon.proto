@@ -1,0 +1,169 @@
+// Tetragon API v1 — minimal subset for VectorGuard
+// Field numbers match Tetragon release v1.x (github.com/cilium/tetragon)
+syntax = "proto3";
+package tetragon;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
+
+// ── Service ─────────────────────────────────────────────────
+
+service FineGuidanceSensors {
+  rpc GetEvents(GetEventsRequest) returns (stream GetEventsResponse);
+  rpc GetHealth(GetHealthStatusRequest) returns (GetHealthStatusResponse);
+}
+
+// ── Request / Response ──────────────────────────────────────
+
+message GetEventsRequest {
+  repeated EventType allow_list = 1;
+  repeated EventType deny_list  = 2;
+}
+
+message GetEventsResponse {
+  oneof event {
+    ProcessExec        process_exec        = 1;
+    ProcessExit        process_exit        = 5;
+    ProcessKprobe      process_kprobe      = 9;
+    ProcessTracepoint  process_tracepoint  = 10;
+    ProcessLoader      process_loader      = 11;
+    ProcessUprobe      process_uprobe      = 18;
+  }
+  string                    node_name  = 14;
+  google.protobuf.Timestamp time       = 15;
+}
+
+enum EventType {
+  UNDEF               = 0;
+  PROCESS_EXEC        = 1;
+  PROCESS_EXIT        = 5;
+  PROCESS_KPROBE      = 9;
+  PROCESS_TRACEPOINT  = 10;
+  PROCESS_LOADER      = 11;
+  PROCESS_UPROBE      = 18;
+}
+
+// ── Core Types ──────────────────────────────────────────────
+
+message Process {
+  string                          exec_id        = 1;
+  google.protobuf.UInt32Value     pid            = 2;
+  google.protobuf.UInt32Value     uid            = 3;
+  string                          cwd            = 4;
+  string                          binary         = 5;
+  string                          arguments      = 6;
+  string                          flags          = 7;
+  google.protobuf.Timestamp       start_time     = 8;
+  google.protobuf.UInt32Value     auid           = 9;
+  Pod                             pod            = 10;
+  string                          docker         = 11;
+  string                          parent_exec_id = 12;
+  uint32                          refcnt         = 13;
+}
+
+message Pod {
+  string namespace  = 1;
+  string name       = 4;
+}
+
+// ── Event Types ─────────────────────────────────────────────
+
+message ProcessExec {
+  Process process = 1;
+  Process parent  = 2;
+}
+
+message ProcessExit {
+  Process process = 1;
+  Process parent  = 2;
+  string  signal  = 3;
+  uint32  status  = 4;
+}
+
+message ProcessKprobe {
+  Process                 process       = 1;
+  Process                 parent        = 2;
+  string                  function_name = 3;
+  repeated KprobeArgument args          = 4;
+  string                  action        = 6;
+}
+
+message ProcessTracepoint {
+  Process                 process = 1;
+  Process                 parent  = 2;
+  string                  subsys  = 3;
+  string                  event   = 4;
+  repeated KprobeArgument args    = 5;
+}
+
+message ProcessLoader {
+  Process process = 1;
+  string  path    = 2;
+}
+
+message ProcessUprobe {
+  Process process       = 1;
+  Process parent        = 2;
+  string  path          = 3;
+  string  symbol        = 4;
+}
+
+// ── Kprobe Arguments ────────────────────────────────────────
+
+message KprobeArgument {
+  oneof arg {
+    string      string_arg  = 1;
+    int32       int_arg     = 2;
+    bool        bool_arg    = 3;
+    KprobeFile  file_arg    = 4;
+    KprobeSock  sock_arg    = 10;
+    uint64      size_arg    = 11;
+    bytes       bytes_arg   = 12;
+    int64       long_arg    = 17;
+  }
+}
+
+message KprobeFile {
+  string path  = 1;
+  uint32 flags = 2;
+  bool   mount = 3;
+}
+
+message KprobeSock {
+  uint32 family   = 1;
+  string type     = 2;
+  string protocol = 3;
+  uint32 sport    = 4;
+  uint32 dport    = 5;
+  string saddr    = 6;
+  string daddr    = 7;
+  uint64 cookie   = 8;
+}
+
+// ── Health ───────────────────────────────────────────────────
+
+message GetHealthStatusRequest {
+  repeated HealthStatusType event_set = 1;
+}
+
+message GetHealthStatusResponse {
+  repeated HealthStatus health_status = 1;
+}
+
+enum HealthStatusType {
+  HEALTH_STATUS_TYPE_UNDEF    = 0;
+  HEALTH_STATUS_TYPE_STATUS   = 1;
+}
+
+message HealthStatus {
+  HealthStatusType type    = 1;
+  HealthStatusResult status = 2;
+  string details           = 3;
+}
+
+enum HealthStatusResult {
+  HEALTH_STATUS_UNDEF   = 0;
+  HEALTH_STATUS_RUNNING = 1;
+  HEALTH_STATUS_STOPPED = 2;
+  HEALTH_STATUS_ERROR   = 3;
+}

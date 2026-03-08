@@ -2151,6 +2151,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "aya",
+ "aya-build",
  "aya-log",
  "bytes",
  "crossterm",

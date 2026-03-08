@@ -4,7 +4,7 @@ use tracing::warn;
 use crate::config::{EmbedderBackend, EmbedderConfig};
 use crate::event::{EventType, NormalizedEvent, Severity};
 
-/// Qdrant에 저장할 벡터 차원 수 (local: 64, OpenAI text-embedding-ada-002: 1536)
+/// Number of vector dimensions stored in Qdrant (local: 64, OpenAI text-embedding-ada-002: 1536)
 pub const VECTOR_DIM: usize = 64;
 
 pub struct Embedder {
@@ -35,15 +35,15 @@ impl Embedder {
             EmbedderBackend::Local  => Ok(local_embed(event)),
             EmbedderBackend::Openai => self.openai_embed(event).await,
             EmbedderBackend::Claude => {
-                // Anthropic은 전용 임베딩 API 미제공 → local 폴백
-                warn!("Claude 임베딩 백엔드는 미지원 — local로 폴백");
+                // Anthropic does not provide a dedicated embedding API → fall back to local
+                warn!("Claude embedding backend is not supported — falling back to local");
                 Ok(local_embed(event))
             }
         }
     }
 
     async fn openai_embed(&self, event: &NormalizedEvent) -> Result<Vec<f32>> {
-        let key = self.api_key.as_deref().context("OPENAI_API_KEY 미설정")?;
+        let key = self.api_key.as_deref().context("OPENAI_API_KEY is not set")?;
         let text = event_to_text(event);
 
         let resp: serde_json::Value = self
@@ -61,7 +61,7 @@ impl Embedder {
 
         let vec: Vec<f32> = resp["data"][0]["embedding"]
             .as_array()
-            .context("임베딩 응답 파싱 실패")?
+            .context("Failed to parse embedding response")?
             .iter()
             .filter_map(|v| v.as_f64().map(|f| f as f32))
             .collect();
@@ -70,13 +70,13 @@ impl Embedder {
     }
 }
 
-// ── 로컬 결정론적 임베더 ────────────────────────────────────────
+// ── Local Deterministic Embedder ────────────────────────────────────────
 
-/// 이벤트를 VECTOR_DIM 차원 특성 벡터로 변환 (학습 없음, 결정론적)
+/// Convert an event to a VECTOR_DIM-dimensional feature vector (no training, deterministic)
 fn local_embed(event: &NormalizedEvent) -> Vec<f32> {
     let mut v = vec![0.0f32; VECTOR_DIM];
 
-    // [0-4] 이벤트 종류 원핫
+    // [0-4] Event type one-hot encoding
     match &event.event_type {
         EventType::Exec           => v[0] = 1.0,
         EventType::FileAccess { .. } => v[1] = 1.0,
@@ -85,7 +85,7 @@ fn local_embed(event: &NormalizedEvent) -> Vec<f32> {
         EventType::Signal { .. }     => v[4] = 1.0,
     }
 
-    // [5] 심각도 정규화
+    // [5] Severity normalized
     v[5] = match event.severity {
         Severity::Info     => 0.0,
         Severity::Low      => 0.25,
@@ -94,15 +94,15 @@ fn local_embed(event: &NormalizedEvent) -> Vec<f32> {
         Severity::Critical => 1.0,
     };
 
-    // [6] UID (root=1.0, 그 외 정규화)
+    // [6] UID (root=1.0, others normalized)
     v[6] = if event.process.uid == 0 { 1.0 } else { (event.process.uid as f32).min(65535.0) / 65535.0 };
 
-    // [7-22] 프로세스명 바이트 → 정규화 (최대 16자)
+    // [7-22] Process name bytes → normalized (up to 16 chars)
     for (i, &b) in event.process.binary.as_bytes().iter().take(16).enumerate() {
         v[7 + i] = b as f32 / 255.0;
     }
 
-    // [23-62] 이벤트 종류별 추가 특성
+    // [23-62] Additional features per event type
     match &event.event_type {
         EventType::FileAccess { path, flags } => {
             for (i, &b) in path.as_bytes().iter().take(38).enumerate() {
@@ -126,7 +126,7 @@ fn local_embed(event: &NormalizedEvent) -> Vec<f32> {
         EventType::Exec => {}
     }
 
-    // 유클리드 정규화 → 코사인 유사도 사용 가능
+    // Euclidean normalization → enables cosine similarity
     let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
     if norm > 1e-9 {
         v.iter_mut().for_each(|x| *x /= norm);

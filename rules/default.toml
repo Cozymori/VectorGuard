@@ -1,7 +1,7 @@
-# VectorGuard Fast Path 기본 규칙
+# VectorGuard Fast Path Default Rules
 # action: block | alert | log | allow
 
-# ── 민감 파일 접근 차단 ───────────────────────────────────────
+# ── Block access to sensitive files ───────────────────────────
 [[rules]]
 name   = "block-shadow-access"
 action = "block"
@@ -13,7 +13,7 @@ action = "block"
 match_path_prefix = ["/root/.ssh/", "/home/"]
 match_exec_path   = ["/bin/bash", "/bin/sh", "/usr/bin/python3"]
 
-# ── 서비스 프로세스의 쉘 실행 탐지 ──────────────────────────
+# ── Detect shell execution by service processes ───────────────
 [[rules]]
 name   = "alert-webserver-shell"
 action = "alert"
@@ -26,20 +26,20 @@ action = "alert"
 match_process   = ["postgres", "mysqld", "mongod"]
 match_exec_path = ["/bin/sh", "/bin/bash"]
 
-# ── 의심스러운 아웃바운드 포트 ───────────────────────────────
+# ── Suspicious outbound ports ─────────────────────────────────
 [[rules]]
 name       = "alert-suspicious-port"
 action     = "alert"
 match_port = [4444, 1337, 31337, 9001, 8888, 6666]
 
-# ── root의 네트워크 도구 실행 ────────────────────────────────
+# ── Network tool execution by root ────────────────────────────
 [[rules]]
 name          = "alert-root-nettools"
 action        = "alert"
 match_uid     = 0
 match_exec_path = ["/usr/bin/wget", "/usr/bin/curl", "/usr/bin/nc", "/usr/bin/ncat"]
 
-# ── 커널 모듈 로드 탐지 ──────────────────────────────────────
+# ── Kernel module load detection ──────────────────────────────
 [[rules]]
 name          = "alert-insmod"
 action        = "alert"

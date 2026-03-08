@@ -20,23 +20,23 @@ impl VectorDb {
         }
     }
 
-    /// 컬렉션이 없으면 생성
+    /// Create collection if it does not exist
     pub async fn ensure_collection(&self, vector_size: usize) -> Result<()> {
         match self.backend {
             VectorDbBackend::Qdrant  => self.qdrant_ensure(vector_size).await,
-            VectorDbBackend::Usearch => Ok(()), // uSearch는 인메모리, 별도 초기화 불필요
+            VectorDbBackend::Usearch => Ok(()), // uSearch is in-memory, no initialization needed
         }
     }
 
-    /// 벡터 저장 (upsert)
+    /// Store a vector (upsert)
     pub async fn upsert(&self, id: u64, vector: Vec<f32>, payload: serde_json::Value) -> Result<()> {
         match self.backend {
             VectorDbBackend::Qdrant  => self.qdrant_upsert(id, vector, payload).await,
-            VectorDbBackend::Usearch => Ok(()), // 인메모리 구현 스킵
+            VectorDbBackend::Usearch => Ok(()), // skip in-memory implementation
         }
     }
 
-    /// 유사 벡터 검색 → 코사인 유사도 점수 목록 반환
+    /// Search for similar vectors → return list of cosine similarity scores
     pub async fn search(
         &self,
         vector: Vec<f32>,
@@ -45,11 +45,11 @@ impl VectorDb {
     ) -> Result<Vec<f32>> {
         match self.backend {
             VectorDbBackend::Qdrant  => self.qdrant_search(vector, limit, score_threshold).await,
-            VectorDbBackend::Usearch => Ok(vec![]), // 항상 unknown → anomaly로 처리
+            VectorDbBackend::Usearch => Ok(vec![]), // always unknown → treated as anomaly
         }
     }
 
-    // ── Qdrant REST 구현 ──────────────────────────────────────
+    // ── Qdrant REST Implementation ────────────────────────────
 
     async fn qdrant_ensure(&self, vector_size: usize) -> Result<()> {
         let url = format!("{}/collections/{}", self.base_url, self.collection);
@@ -60,7 +60,7 @@ impl VectorDb {
                 "vectors": { "size": vector_size, "distance": "Cosine" }
             });
             self.client.put(&url).json(&body).send().await?;
-            debug!("Qdrant 컬렉션 생성: {}", self.collection);
+            debug!("Qdrant collection created: {}", self.collection);
         }
 
         Ok(())

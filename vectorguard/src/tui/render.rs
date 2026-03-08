@@ -12,13 +12,13 @@ use crate::event::Severity;
 pub fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
 
-    // 전체 레이아웃: 헤더(탭) / 본문 / 푸터
+    // Overall layout: header (tabs) / body / footer
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // 탭 바
-            Constraint::Min(0),     // 본문
-            Constraint::Length(1),  // 푸터
+            Constraint::Length(3),  // tab bar
+            Constraint::Min(0),     // body
+            Constraint::Length(1),  // footer
         ])
         .split(area);
 
@@ -33,7 +33,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_footer(f, chunks[2]);
 }
 
-// ── 탭 바 ─────────────────────────────────────────────────────
+// ── Tab Bar ───────────────────────────────────────────────────
 fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
     let titles: Vec<Line> = Tab::titles()
         .iter()
@@ -65,7 +65,7 @@ fn draw_dashboard(f: &mut Frame, app: &App, area: Rect) {
         .constraints([Constraint::Length(5), Constraint::Min(0)])
         .split(area);
 
-    // 통계 카드 4개
+    // 4 stat cards
     let stat_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -82,7 +82,7 @@ fn draw_dashboard(f: &mut Frame, app: &App, area: Rect) {
     draw_stat_card(f, "Alerts",        &s.alerts.to_string(),         Color::Yellow, stat_chunks[2]);
     draw_stat_card(f, "High Severity", &s.high_severity.to_string(),  Color::Magenta,stat_chunks[3]);
 
-    // 최근 이벤트 미니 테이블
+    // Recent events mini table
     draw_recent_events(f, app, chunks[1]);
 }
 
@@ -131,7 +131,7 @@ fn draw_recent_events(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(table, area);
 }
 
-// ── Events 탭 ─────────────────────────────────────────────────
+// ── Events Tab ────────────────────────────────────────────────
 fn draw_events(f: &mut Frame, app: &App, area: Rect) {
     let header = Row::new(vec!["Time", "PID", "Process", "Kind", "Severity", "Action"])
         .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
@@ -168,7 +168,7 @@ fn draw_events(f: &mut Frame, app: &App, area: Rect) {
     f.render_stateful_widget(table, area, &mut state);
 }
 
-// ── Config 탭 ─────────────────────────────────────────────────
+// ── Config Tab ────────────────────────────────────────────────
 fn draw_config(f: &mut Frame, app: &App, area: Rect) {
     let p = Paragraph::new(app.config_text.as_str())
         .block(
@@ -180,7 +180,7 @@ fn draw_config(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(p, area);
 }
 
-// ── 푸터 ──────────────────────────────────────────────────────
+// ── Footer ────────────────────────────────────────────────────
 fn draw_footer(f: &mut Frame, area: Rect) {
     let text = Line::from(vec![
         Span::styled(" q", Style::default().fg(Color::Yellow)),
@@ -193,7 +193,7 @@ fn draw_footer(f: &mut Frame, area: Rect) {
     f.render_widget(Paragraph::new(text), area);
 }
 
-// ── 헬퍼 ──────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────
 fn severity_color(s: &Severity) -> Color {
     match s {
         Severity::Info     => Color::White,

@@ -21,7 +21,7 @@ tokio-stream = "0.1"
 reqwest = { version = "0.12", features = ["json"] }
 glob = "0.3"
 
-# Linux 전용 (eBPF 로더)
+# Linux only (eBPF loader)
 [target.'cfg(target_os = "linux")'.dependencies]
 aya = { version = "0.13", features = ["async_tokio"] }
 aya-log = "0.2"

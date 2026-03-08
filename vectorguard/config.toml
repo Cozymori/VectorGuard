@@ -2,12 +2,12 @@
 log_level = "info"       # debug | info | warn | error
 hot_reload = true
 
-# ── 감시 대상 ────────────────────────────────────────────────
+# ── Monitoring Targets ────────────────────────────────────────
 [scope]
-targets = ["nginx", "postgres", "sshd"]   # glob 지원 예정
-exclude_namespaces = ["kube-system"]       # k8s 전용, 베어메탈은 무시
+targets = ["nginx", "postgres", "sshd"]   # glob support planned
+exclude_namespaces = ["kube-system"]       # k8s only, ignored on bare-metal
 
-# ── Adapter 선택 ─────────────────────────────────────────────
+# ── Adapter Selection ─────────────────────────────────────────
 [adapter]
 backend = "tetragon"   # tetragon | falco | auditd | native_ebpf
 
@@ -23,7 +23,7 @@ log_path = "/var/log/audit/audit.log"
 # ── Fast Path ────────────────────────────────────────────────
 [fast_path]
 enabled = true
-rules_path = "../rules"            # 개발 시: 리포 내 rules/, 배포 시: /etc/vectorguard/rules/
+rules_path = "../rules"            # dev: rules/ in repo, prod: /etc/vectorguard/rules/
 default_action = "block"   # block | alert | log
 
 # ── Slow Path ────────────────────────────────────────────────

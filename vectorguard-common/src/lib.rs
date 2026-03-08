@@ -1,13 +1,13 @@
-//! eBPF 프로그램과 userspace 간 공유되는 타입 정의
-//! no_std 환경(eBPF)과 std 환경(userspace) 모두 컴파일 가능해야 함
+//! Type definitions shared between the eBPF program and userspace
+//! Must compile in both no_std (eBPF) and std (userspace) environments
 
 #![cfg_attr(not(feature = "user"), no_std)]
 
 #[cfg(feature = "user")]
 use serde::{Deserialize, Serialize};
 
-/// eBPF Ring Buffer를 통해 커널→유저스페이스로 전달되는 raw 이벤트
-/// C-compatible 레이아웃 (eBPF와 메모리 공유)
+/// Raw event passed from kernel → userspace via eBPF Ring Buffer
+/// C-compatible layout (shared memory with eBPF)
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct RawEvent {
@@ -17,9 +17,9 @@ pub struct RawEvent {
     pub ppid:      u32,
     pub uid:       u32,
     pub gid:       u32,
-    /// 프로세스 바이너리 경로 (null-terminated)
+    /// Process binary path (null-terminated)
     pub comm:      [u8; 64],
-    /// 이벤트 종류별 추가 데이터
+    /// Additional data per event type
     pub payload:   EventPayload,
 }
 
@@ -32,7 +32,7 @@ pub enum EventKind {
     Privilege   = 3,
 }
 
-/// 이벤트 종류별 payload (union으로 메모리 절약)
+/// Per-event-type payload (union to save memory)
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub union EventPayload {
@@ -59,7 +59,7 @@ pub struct ExecPayload {
 #[derive(Debug, Clone, Copy)]
 pub struct FilePayload {
     pub path:  [u8; 256],
-    pub flags: u32,            // O_RDONLY, O_WRONLY, O_RDWR 등
+    pub flags: u32,            // O_RDONLY, O_WRONLY, O_RDWR, etc.
 }
 
 #[repr(C)]
@@ -78,7 +78,7 @@ pub struct PrivilegePayload {
     pub cap:        u64,       // capability bitmask
 }
 
-/// userspace에서만 쓰는 helper
+/// Helper used only in userspace
 #[cfg(feature = "user")]
 impl RawEvent {
     pub fn comm_str(&self) -> &str {

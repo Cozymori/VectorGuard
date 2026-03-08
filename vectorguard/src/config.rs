@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-// ── 최상위 ────────────────────────────────────────────────────
+// ── Top-Level ──────────────────────────────────────────────────
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
     pub system:     SystemConfig,
@@ -16,8 +16,8 @@ pub struct Config {
 impl Config {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let raw = std::fs::read_to_string(&path)
-            .with_context(|| format!("config 파일 읽기 실패: {}", path.as_ref().display()))?;
-        toml::from_str(&raw).context("config.toml 파싱 실패")
+            .with_context(|| format!("Failed to read config file: {}", path.as_ref().display()))?;
+        toml::from_str(&raw).context("Failed to parse config.toml")
     }
 }
 
@@ -137,14 +137,14 @@ pub enum Theme {
     Light,
 }
 
-// ── 테스트 ────────────────────────────────────────────────────
+// ── Tests ─────────────────────────────────────────────────────
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_load_config() {
-        let cfg = Config::load("config.toml").expect("config.toml 로드 실패");
+        let cfg = Config::load("config.toml").expect("Failed to load config.toml");
         assert_eq!(cfg.adapter.backend, AdapterBackend::Tetragon);
         assert_eq!(cfg.slow_path.similarity_threshold, 0.85);
         assert!(cfg.system.hot_reload);

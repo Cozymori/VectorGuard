@@ -13,7 +13,7 @@ use vectorguard_common::{EventKind, ExecPayload, RawEvent};
 #[map]
 static EVENTS: RingBuf = RingBuf::with_byte_size(1024 * 1024, 0); // 1MB
 
-// ── execve 트레이스포인트 ──────────────────────────────────────
+// ── execve tracepoint ────────────────────────────────────────
 #[tracepoint]
 pub fn handle_exec(ctx: TracePointContext) -> u32 {
     match try_handle_exec(&ctx) {
@@ -62,7 +62,7 @@ fn try_handle_exec(ctx: &TracePointContext) -> Result<u32, i64> {
     Ok(0)
 }
 
-// ── openat 트레이스포인트 ─────────────────────────────────────
+// ── openat tracepoint ───────────────────────────────────────
 #[tracepoint]
 pub fn handle_file_open(ctx: TracePointContext) -> u32 {
     match try_handle_file_open(&ctx) {
@@ -114,7 +114,7 @@ fn try_handle_file_open(ctx: &TracePointContext) -> Result<u32, i64> {
     Ok(0)
 }
 
-// ── connect 트레이스포인트 ────────────────────────────────────
+// ── connect tracepoint ──────────────────────────────────────
 #[tracepoint]
 pub fn handle_net_connect(ctx: TracePointContext) -> u32 {
     match try_handle_net_connect(&ctx) {

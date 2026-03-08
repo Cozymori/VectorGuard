@@ -20,30 +20,30 @@ pub trait Adapter: Send + Sync {
     fn source(&self) -> EventSource;
 }
 
-/// config에 따라 Adapter 인스턴스 생성
+/// Create an Adapter instance based on config
 pub fn create(cfg: &Config) -> Box<dyn Adapter> {
     match cfg.adapter.backend {
         AdapterBackend::Tetragon   => Box::new(TetragonAdapter::new(&cfg.adapter.tetragon)),
         AdapterBackend::Falco      => Box::new(FalcoAdapter::new(&cfg.adapter.falco)),
         AdapterBackend::Auditd     => Box::new(AuditdAdapter::new(&cfg.adapter.auditd)),
         AdapterBackend::NativeEbpf => {
-            // NativeEbpf는 collector.rs를 직접 사용하므로 여기엔 도달하지 않음
-            panic!("NativeEbpf는 adapter::create()로 생성하지 않음")
+            // NativeEbpf uses collector.rs directly and should never reach here
+            panic!("NativeEbpf is not created via adapter::create()")
         }
     }
 }
 
-/// Adapter 이벤트 루프 — 이벤트를 mpsc 채널로 전송
+/// Adapter event loop — forward events to mpsc channel
 pub async fn run(mut adapter: Box<dyn Adapter>, tx: mpsc::Sender<NormalizedEvent>) {
     loop {
         match adapter.next_event().await {
             Ok(ev) => {
                 if tx.send(ev).await.is_err() {
-                    break; // 수신자 종료
+                    break; // receiver closed
                 }
             }
             Err(e) => {
-                warn!("{} adapter 오류: {}", adapter.source().name(), e);
+                warn!("{} adapter error: {}", adapter.source().name(), e);
                 tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
             }
         }

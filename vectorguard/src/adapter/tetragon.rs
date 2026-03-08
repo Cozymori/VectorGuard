@@ -11,8 +11,8 @@ use super::Adapter;
 static EVENT_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Tetragon JSON HTTP adapter
-/// Tetragon의 `/metrics` 또는 커스텀 JSON export 엔드포인트를 폴링
-/// 실제 배포 시 gRPC streaming으로 교체 권장
+/// Polls Tetragon's `/metrics` or a custom JSON export endpoint
+/// Recommended to replace with gRPC streaming in production
 pub struct TetragonAdapter {
     client:   reqwest::Client,
     endpoint: String,
@@ -30,19 +30,19 @@ impl TetragonAdapter {
 #[async_trait]
 impl Adapter for TetragonAdapter {
     async fn next_event(&mut self) -> Result<NormalizedEvent> {
-        // TODO: Tetragon gRPC streaming 구현
-        // 현재는 health endpoint를 폴링해 alive 확인 후 placeholder 반환
+        // TODO: Implement Tetragon gRPC streaming
+        // Currently polls the health endpoint to confirm liveness, then returns a placeholder
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
         let health_url = format!("{}/healthz", self.endpoint);
         match self.client.get(&health_url).send().await {
             Ok(r) => debug!("Tetragon health: {}", r.status()),
             Err(e) => {
-                return Err(anyhow::anyhow!("Tetragon 연결 실패: {}", e));
+                return Err(anyhow::anyhow!("Failed to connect to Tetragon: {}", e));
             }
         }
 
-        anyhow::bail!("Tetragon gRPC adapter 미구현 — native_ebpf 또는 falco 사용 권장")
+        anyhow::bail!("Tetragon gRPC adapter not implemented — use native_ebpf or falco instead")
     }
 
     fn source(&self) -> EventSource {
@@ -50,7 +50,7 @@ impl Adapter for TetragonAdapter {
     }
 }
 
-/// Tetragon JSON 이벤트 → NormalizedEvent 변환 (향후 gRPC 구현 시 사용)
+/// Convert Tetragon JSON event → NormalizedEvent (for future gRPC implementation)
 #[allow(dead_code)]
 fn parse_tetragon_json(v: &serde_json::Value) -> Option<NormalizedEvent> {
     let process_exec = v.get("process_exec")?;

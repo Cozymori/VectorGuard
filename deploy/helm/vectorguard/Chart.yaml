@@ -1,0 +1,17 @@
+apiVersion: v2
+name: vectorguard
+description: Linux runtime security daemon with eBPF kernel enforcement and vector anomaly detection
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - security
+  - ebpf
+  - runtime
+  - daemonset
+  - observability
+home: https://github.com/Cozymori/VectorGuard
+maintainers:
+  - name: Cozymori
+sources:
+  - https://github.com/Cozymori/VectorGuard

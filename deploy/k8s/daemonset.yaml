@@ -1,0 +1,155 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: vectorguard
+  namespace: vectorguard
+  labels:
+    app.kubernetes.io/name: vectorguard
+    app.kubernetes.io/component: agent
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vectorguard
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vectorguard
+        app.kubernetes.io/component: agent
+      annotations:
+        # Restart pods automatically when ConfigMap changes
+        checksum/config: "{{ .Values.configChecksum | default \"\" }}"
+    spec:
+      serviceAccountName: vectorguard
+      hostPID: true          # Required: see host process tree for parent PID resolution
+      hostNetwork: true      # Required: accurate source IP on net connect events
+      dnsPolicy: ClusterFirstWithHostNet
+
+      # Run on every node including control-plane
+      tolerations:
+        - operator: Exists
+          effect: NoSchedule
+        - operator: Exists
+          effect: NoExecute
+
+      # Schedule on Linux nodes only (eBPF requirement)
+      nodeSelector:
+        kubernetes.io/os: linux
+
+      initContainers:
+        # Mount BPF filesystem if not already mounted (some minimal node images skip this)
+        - name: init-bpf-fs
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              mount | grep -q "/sys/fs/bpf" || mount -t bpf bpf /sys/fs/bpf
+          securityContext:
+            privileged: true
+
+      containers:
+        - name: vectorguard
+          image: ghcr.io/cozymori/vectorguard:latest
+          imagePullPolicy: Always
+          args: ["--config", "/etc/vectorguard/config.toml"]
+
+          # ── Security Context ──────────────────────────────────
+          # Minimum capabilities for eBPF without full privileged mode.
+          # If your kernel requires it, set privileged: true instead.
+          securityContext:
+            privileged: false
+            capabilities:
+              add:
+                - SYS_ADMIN   # eBPF program loading
+                - BPF         # eBPF syscall (kernel ≥5.8 separates this)
+                - PERFMON     # perf_event_open for tracepoints
+                - NET_ADMIN   # network monitoring
+                - SYS_PTRACE  # /proc access
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+
+          # ── Volumes ────────────────────────────────────────────
+          volumeMounts:
+            - name: config
+              mountPath: /etc/vectorguard
+              readOnly: true
+            - name: rules
+              mountPath: /etc/vectorguard/rules
+              readOnly: true
+            - name: bpf-fs
+              mountPath: /sys/fs/bpf
+            - name: debugfs
+              mountPath: /sys/kernel/debug
+              readOnly: true
+            - name: proc
+              mountPath: /proc
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+
+          # ── Resources ─────────────────────────────────────────
+          resources:
+            requests:
+              cpu:    "50m"
+              memory: "64Mi"
+            limits:
+              cpu:    "500m"
+              memory: "256Mi"
+
+          # ── Environment ───────────────────────────────────────
+          env:
+            - name: RUST_LOG
+              value: "info"
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            # Optional: OpenAI key for slow-path embedder
+            # - name: OPENAI_API_KEY
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: vectorguard-secrets
+            #       key: openai-api-key
+
+          # ── Health Probes ─────────────────────────────────────
+          # VectorGuard writes a health file on startup; probe reads it.
+          livenessProbe:
+            exec:
+              command: ["test", "-f", "/tmp/vectorguard.ready"]
+            initialDelaySeconds: 10
+            periodSeconds:       30
+            failureThreshold:    3
+
+      volumes:
+        - name: config
+          configMap:
+            name: vectorguard-config
+            items:
+              - key: config.toml
+                path: config.toml
+        - name: rules
+          configMap:
+            name: vectorguard-config
+            items:
+              - key: default.toml
+                path: default.toml
+        - name: bpf-fs
+          hostPath:
+            path: /sys/fs/bpf
+            type: DirectoryOrCreate
+        - name: debugfs
+          hostPath:
+            path: /sys/kernel/debug
+            type: Directory
+        - name: proc
+          hostPath:
+            path: /proc
+            type: Directory
+        - name: tmp
+          emptyDir: {}

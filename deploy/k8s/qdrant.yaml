@@ -1,0 +1,72 @@
+# Qdrant vector database for VectorGuard Slow Path
+# In production, replace with a managed Qdrant cluster or use PersistentVolume.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: qdrant
+  namespace: vectorguard
+  labels:
+    app.kubernetes.io/name: qdrant
+    app.kubernetes.io/component: vectordb
+spec:
+  serviceName: qdrant
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: qdrant
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: qdrant
+    spec:
+      containers:
+        - name: qdrant
+          image: qdrant/qdrant:v1.9.0
+          ports:
+            - containerPort: 6333
+              name: http
+            - containerPort: 6334
+              name: grpc
+          resources:
+            requests:
+              cpu:    "100m"
+              memory: "256Mi"
+            limits:
+              cpu:    "1"
+              memory: "1Gi"
+          volumeMounts:
+            - name: storage
+              mountPath: /qdrant/storage
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 6333
+            initialDelaySeconds: 5
+            periodSeconds:       10
+  volumeClaimTemplates:
+    - metadata:
+        name: storage
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qdrant
+  namespace: vectorguard
+  labels:
+    app.kubernetes.io/name: qdrant
+spec:
+  selector:
+    app.kubernetes.io/name: qdrant
+  ports:
+    - port: 6333
+      name: http
+      targetPort: 6333
+    - port: 6334
+      name: grpc
+      targetPort: 6334
+  clusterIP: None   # headless for StatefulSet DNS

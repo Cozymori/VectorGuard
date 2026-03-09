@@ -130,17 +130,34 @@ section "Rust toolchain"
 if ! command -v rustup &>/dev/null; then
   info "Installing rustup..."
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-  source "$HOME/.cargo/env"
+  # Source immediately so cargo/rustup are available for the rest of this script
+  export PATH="$HOME/.cargo/bin:$PATH"
+  source "$HOME/.cargo/env" 2>/dev/null || true
   ok "rustup installed"
 else
+  export PATH="$HOME/.cargo/bin:$PATH"
   source "$HOME/.cargo/env" 2>/dev/null || true
   ok "rustup already present ($(rustup --version 2>/dev/null | head -1))"
 fi
 
-rustup toolchain install stable 2>/dev/null | tail -1
-rustup target add bpfel-unknown-none 2>/dev/null
-rustup component add rust-src 2>/dev/null
-ok "Rust targets and components ready"
+# Stable toolchain (userspace daemon)
+rustup toolchain install stable --no-self-update 2>/dev/null | tail -1
+
+# Nightly toolchain + rust-src (required for eBPF -Z build-std=core)
+# Note: bpfel-unknown-none has NO prebuilt std — rustup target add will fail.
+# rust-src is the correct component; it lets cargo rebuild std from source.
+info "Installing nightly toolchain + rust-src (required for eBPF)..."
+rustup toolchain install nightly --component rust-src --no-self-update
+ok "Rust toolchain ready (stable + nightly with rust-src)"
+
+# bpf-linker: LLVM-based linker for bpfel-unknown-none target
+if ! command -v bpf-linker &>/dev/null; then
+  info "Installing bpf-linker (this may take a few minutes)..."
+  cargo install --locked bpf-linker
+  ok "bpf-linker installed"
+else
+  ok "bpf-linker already present"
+fi
 
 # ── Clone / update source ─────────────────────────────────────────────────────
 section "Fetching source"
@@ -163,15 +180,26 @@ info "This may take a few minutes..."
 
 cd "$SOURCE_DIR"
 
-# eBPF kernel program (no_std, BPF target)
-cargo build -p vectorguard-ebpf \
+# Step 1: eBPF kernel program (nightly, no_std, bpfel-unknown-none target)
+# -Z build-std=core is a nightly-only flag; must use +nightly toolchain.
+# rustup target add bpfel-unknown-none is NOT needed (no prebuilt std).
+info "Building eBPF kernel program..."
+cargo +nightly build -p vectorguard-ebpf \
   --target bpfel-unknown-none \
   --release \
   -Z build-std=core \
-  2>&1 | grep -E "^error|Compiling vectorguard|Finished" || true
+  2>&1 | grep -E "^error|Compiling vectorguard|Finished"
 
-# Userspace daemon
-cargo build -p vectorguard --release 2>&1 | grep -E "^error|Compiling vectorguard|Finished" || true
+EBPF_BINARY="$SOURCE_DIR/target/bpfel-unknown-none/release/vectorguard-ebpf"
+[[ -f "$EBPF_BINARY" ]] || die "eBPF build failed: $EBPF_BINARY not found"
+ok "eBPF program built"
+
+# Step 2: Userspace daemon (stable)
+# build.rs copies the eBPF binary from target/bpfel-unknown-none/ into OUT_DIR
+# so the daemon can embed it via include_bytes!.
+info "Building userspace daemon..."
+cargo build -p vectorguard --release \
+  2>&1 | grep -E "^error|Compiling vectorguard|Finished"
 
 BINARY="$SOURCE_DIR/target/release/vectorguard"
 [[ -f "$BINARY" ]] || die "Build failed: $BINARY not found"
@@ -279,7 +307,14 @@ if [[ $OPT_NO_QDRANT -eq 0 ]]; then
 fi
 
 # ── systemd service ───────────────────────────────────────────────────────────
-if [[ $OPT_NO_SERVICE -eq 0 ]] && command -v systemctl &>/dev/null; then
+# Skip if systemd is not the init system (e.g. WSL without systemd enabled,
+# Docker, LXC). Check that pid 1 is actually systemd before proceeding.
+IS_SYSTEMD=0
+if command -v systemctl &>/dev/null && [[ "$(ps -p 1 -o comm=)" == "systemd" ]]; then
+  IS_SYSTEMD=1
+fi
+
+if [[ $OPT_NO_SERVICE -eq 0 ]] && [[ $IS_SYSTEMD -eq 1 ]]; then
   section "systemd service"
 
   cat > "/etc/systemd/system/${SERVICE_NAME}.service" << SYSTEMD
@@ -326,6 +361,17 @@ SYSTEMD
   else
     warn "Service failed to start. Check logs: journalctl -u $SERVICE_NAME -n 50"
   fi
+elif [[ $OPT_NO_SERVICE -eq 0 ]]; then
+  # No systemd (WSL without systemd, Docker, etc.) — skip service, print manual run cmd
+  section "systemd not available"
+  warn "systemd not detected (WSL without systemd, or non-systemd init)."
+  warn "Service registration skipped. Run manually:"
+  warn "  sudo $INSTALL_DIR/vectorguard --config $CONFIG_DIR/config.toml"
+  warn ""
+  warn "To enable systemd on WSL2 (Windows 11):"
+  warn "  echo '[boot]' | sudo tee /etc/wsl.conf"
+  warn "  echo 'systemd=true' | sudo tee -a /etc/wsl.conf"
+  warn "  Then restart WSL: wsl --shutdown  (from PowerShell)"
 fi
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────
@@ -340,14 +386,26 @@ echo -e "
   Binary:    $INSTALL_DIR/vectorguard
   Config:    $CONFIG_DIR/config.toml
   Rules:     $RULES_DIR/
+"
 
-  ${BOLD}Useful commands:${RESET}
+if [[ $IS_SYSTEMD -eq 1 ]]; then
+echo -e "  ${BOLD}Useful commands:${RESET}
     View logs:      journalctl -u vectorguard -f
     Service status: systemctl status vectorguard
     Reload config:  systemctl reload-or-restart vectorguard
     Edit config:    \$EDITOR $CONFIG_DIR/config.toml
-    Run manually:   sudo vectorguard --config $CONFIG_DIR/config.toml
+"
+else
+echo -e "  ${BOLD}Run manually (no systemd detected):${RESET}
+    sudo vectorguard --config $CONFIG_DIR/config.toml
 
-  ${BOLD}To uninstall:${RESET}
+  ${BOLD}Enable systemd on WSL2 (Windows 11 only):${RESET}
+    echo '[boot]' | sudo tee /etc/wsl.conf
+    echo 'systemd=true' | sudo tee -a /etc/wsl.conf
+    # Then in PowerShell: wsl --shutdown
+"
+fi
+
+echo -e "  ${BOLD}To uninstall:${RESET}
     sudo bash uninstall.sh
 "

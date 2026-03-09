@@ -90,10 +90,10 @@ Kernel-level enforcement (Linux only):
 | `vectorguard/src/adapter/tetragon.rs` | 276 | Tetragon gRPC streaming client (tonic); auto-reconnect with 5 s backoff |
 | `vectorguard/src/adapter/falco.rs` | 155 | Async JSON log tail |
 | `vectorguard/src/adapter/auditd.rs` | 156 | Async auditd SYSCALL record parser |
-| `vectorguard/src/tui/mod.rs` | 65 | TUI entry point; `tokio::select!` on events + keyboard |
+| `vectorguard/src/tui/mod.rs` | 95 | TUI entry point; headless fallback when no TTY; `tokio::select!` on events + keyboard |
 | `vectorguard/src/tui/app.rs` | 142 | `App` state model |
 | `vectorguard/src/tui/render.rs` | 205 | ratatui layout and widget rendering |
-| `vectorguard/build.rs` | — | Compiles Tetragon protobuf (tonic-build) + eBPF binary (aya-build, Linux only) |
+| `vectorguard/build.rs` | 55 | Compiles Tetragon protobuf (tonic-build); copies pre-built eBPF binary to OUT_DIR (Linux only) |
 | `rules/default.toml` | — | Default fast-path rules (block shadow access, alert webserver shell spawns, etc.) |
 
 **Total:** ~3,400 lines of Rust
@@ -188,6 +188,31 @@ Three-panel terminal UI:
 
 `tokio::select!` drives both keyboard input (`crossterm` event-stream) and the event channel.
 
+Automatically falls back to **headless mode** when no TTY is attached (Docker, systemd service). In headless mode, events are logged via `tracing::info!` instead of the TUI.
+
+### 5.9 K8s Namespace Filtering
+
+`ScopeFilter` implements four-layer filtering for Kubernetes-aware events:
+1. Process binary glob match (all platforms)
+2. `include_namespaces` allow-list (K8s events only; empty = all)
+3. `exclude_namespaces` deny-list (takes precedence over include)
+4. `label_selectors` `key=value` pairs (ALL must match)
+
+Non-K8s events bypass namespace/label checks. 12 unit tests.
+
+### 5.10 Deployment Automation
+
+| Artifact | Description |
+|---|---|
+| `Dockerfile` | Multi-stage build: nightly+bpf-linker builder → trixie-slim runtime |
+| `docker-compose.yml` | VectorGuard + Qdrant with health-gated startup |
+| `install.sh` | Bare-metal installer (Ubuntu/Debian/RHEL/Fedora/Arch); installs rustup, builds from source, creates systemd service |
+| `uninstall.sh` | Removes service, binary, config with confirmation |
+| `deploy-k8s.sh` | Auto-detects Helm/kubectl; deploys DaemonSet + Qdrant |
+| `deploy/k8s/` | Raw Kubernetes manifests (Namespace, RBAC, ConfigMap, DaemonSet, Qdrant) |
+| `deploy/helm/vectorguard/` | Helm chart with parameterized values, RBAC, configmap checksum |
+| `.github/workflows/ci.yml` | CI: check, test, Docker build + push to ghcr.io |
+
 ---
 
 ## 6. Configuration Schema
@@ -240,22 +265,34 @@ collection = "vectorguard"
 
 ### Build
 ```bash
-# Non-Linux / dev check
+# Non-Linux / dev check (macOS, CI)
 cargo check -p vectorguard
 
-# Linux full build (compiles eBPF + userspace)
-cargo build --release -p vectorguard
+# Linux full build — build.rs compiles eBPF then embeds it via include_bytes!
+cargo +nightly build -p vectorguard-ebpf \
+  --target bpfel-unknown-none --release -Z build-std=core
+cargo build -p vectorguard --release
 ```
 
 ### Run
 ```bash
 # Requires root for eBPF program loading
-sudo ./target/release/vectorguard
+sudo ./target/release/vectorguard --config config.toml
 
-# With Qdrant for slow path
-docker run -p 6333:6333 qdrant/qdrant
-sudo ./target/release/vectorguard
+# Docker (automatically uses headless/log mode — no TTY needed)
+docker compose up -d
+
+# Bare-metal automated install (Ubuntu/Debian/RHEL/Arch)
+sudo bash install.sh
+
+# Kubernetes DaemonSet deploy
+bash deploy-k8s.sh --adapter native_ebpf
 ```
+
+### Build Notes
+- **eBPF build isolation:** `build.rs` no longer calls `aya_build` (which had a path-conflict bug where it used the same path for the cargo target dir and the output file). Instead it copies the pre-compiled binary from `target/bpfel-unknown-none/release/vectorguard-ebpf` directly to `OUT_DIR`.
+- **Docker base:** `rust:latest` builder → `debian:trixie-slim` runtime (matching glibc version).
+- **bpf-linker** is installed with `--locked` to match the Rust version available in the builder.
 
 ---
 
@@ -280,7 +317,7 @@ sudo ./target/release/vectorguard
 | `fast_path/rules.rs` | 18 unit tests (rule matching, action precedence, builtin rules) |
 | `slow_path/embedder.rs` | 6 unit tests (dimensions, normalization, cosine similarity, determinism) |
 | `slow_path/context.rs` | 4 unit tests (first-event, dimension, pruning, unit-normalization) |
-| `scope.rs` | 3 unit tests (empty targets, exact match, glob match) |
+| `scope.rs` | 12 unit tests (binary glob, include/exclude namespace, label selectors) |
 
 ---
 

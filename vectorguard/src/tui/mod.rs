@@ -16,11 +16,21 @@ use tokio::sync::mpsc;
 
 use crate::event::NormalizedEvent;
 
-/// TUI entry point — initialize terminal → main loop → restore terminal
-/// event_rx: channel for receiving processed events (if None, runs without events)
+/// TUI entry point — initialize terminal → main loop → restore terminal.
+/// event_rx: channel for receiving processed events (if None, runs without events).
+/// Falls back to headless mode (logging only) when no TTY is available.
 pub async fn run(app: App, mut event_rx: Option<mpsc::Receiver<NormalizedEvent>>) -> Result<()> {
-    enable_raw_mode()?;
-    execute!(stdout(), EnterAlternateScreen)?;
+    // Attempt to enter raw mode; if no TTY is attached (e.g. Docker/systemd
+    // service), fall back to a headless loop that keeps the daemon running.
+    if enable_raw_mode().is_err() {
+        return run_headless(&mut event_rx).await;
+    }
+
+    if execute!(stdout(), EnterAlternateScreen).is_err() {
+        let _ = disable_raw_mode();
+        return run_headless(&mut event_rx).await;
+    }
+
     let backend = CrosstermBackend::new(stdout());
     let mut terminal = Terminal::new(backend)?;
 
@@ -31,6 +41,31 @@ pub async fn run(app: App, mut event_rx: Option<mpsc::Receiver<NormalizedEvent>>
     terminal.show_cursor()?;
 
     result
+}
+
+/// Headless fallback: drain the event channel and log events, keeping the
+/// daemon alive until the channel is closed (process killed / SIGTERM).
+async fn run_headless(event_rx: &mut Option<mpsc::Receiver<NormalizedEvent>>) -> Result<()> {
+    tracing::info!("No TTY detected — running in headless (log-only) mode");
+    loop {
+        match event_rx.as_mut() {
+            Some(rx) => match rx.recv().await {
+                Some(ev) => tracing::info!(
+                    event = ?ev.event_type,
+                    pid = ev.process.pid,
+                    binary = %ev.process.binary,
+                    action = ?ev.action,
+                    "event"
+                ),
+                None => break,
+            },
+            None => {
+                // No event source — sleep until cancelled
+                tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn run_loop(

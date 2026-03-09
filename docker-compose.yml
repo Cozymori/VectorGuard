@@ -1,5 +1,6 @@
 services:
   vectorguard:
+    image: vectorguard:dev
     build: .
     privileged: true          # Required for eBPF program loading
     pid: host                 # Host PID namespace access for process tree visibility
@@ -24,10 +25,11 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/6333' 2>/dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
 
 volumes:
   qdrant_data:

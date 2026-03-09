@@ -90,13 +90,14 @@ async fn main() -> Result<()> {
         if cfg_snap.adapter.backend == AdapterBackend::NativeEbpf {
             let tx = raw_tx.clone();
             let enf_arc = Arc::clone(&enf_shared);
+            let fast_path_cfg = cfg_snap.fast_path.clone();
 
             tokio::spawn(async move {
                 match collector::load_ebpf() {
                     Ok(mut ebpf) => {
                         match enforcer::Enforcer::from_ebpf(&mut ebpf) {
                             Ok(mut enf) => {
-                                let tmp_fp = fast_path::FastPath::new(&cfg_snap.fast_path);
+                                let tmp_fp = fast_path::FastPath::new(&fast_path_cfg);
                                 if let Err(e) = enf.load_rules(tmp_fp.rules()) {
                                     tracing::warn!("Enforcer rule load failed: {}", e);
                                 }

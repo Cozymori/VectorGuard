@@ -5,7 +5,10 @@ use aya_ebpf::{
     macros::{map, tracepoint, lsm},
     maps::{RingBuf, HashMap},
     programs::{TracePointContext, LsmContext},
-    helpers::{bpf_get_current_pid_tgid, bpf_get_current_uid_gid, bpf_ktime_get_ns, bpf_send_signal},
+    helpers::{
+        bpf_get_current_pid_tgid, bpf_get_current_uid_gid,
+        bpf_get_current_comm, bpf_ktime_get_ns, bpf_send_signal,
+    },
 };
 use vectorguard_common::{EventKind, ExecPayload, RawEvent};
 
@@ -28,21 +31,32 @@ static BLOCKED_UIDS: HashMap<u32, u8> = HashMap::with_max_entries(256, 0);
 
 // ── Helper: check if current comm is blocked ──────────────────
 #[inline(always)]
-fn comm_is_blocked(comm: &[u8; 64]) -> bool {
-    let mut key = [0u8; 16];
-    let mut i = 0;
-    while i < 16 {
-        if comm[i] == 0 { break; }
-        key[i] = comm[i];
-        i += 1;
-    }
-    unsafe { BLOCKED_COMMS.get(&key).is_some() }
+fn comm_is_blocked(comm: &[u8; 16]) -> bool {
+    unsafe { BLOCKED_COMMS.get(comm).is_some() }
 }
 
 // ── Helper: check if current uid is blocked ───────────────────
 #[inline(always)]
 fn uid_is_blocked(uid: u32) -> bool {
     unsafe { BLOCKED_UIDS.get(&uid).is_some() }
+}
+
+// ── Helper: get current comm as [u8; 16] ─────────────────────
+#[inline(always)]
+fn get_comm() -> [u8; 16] {
+    bpf_get_current_comm().unwrap_or([0u8; 16])
+}
+
+// ── Helper: fill RawEvent comm field from [u8;16] ────────────
+#[inline(always)]
+unsafe fn fill_comm(event: *mut RawEvent, comm16: &[u8; 16]) {
+    unsafe {
+        let mut i = 0usize;
+        while i < 16 {
+            (*event).comm[i] = comm16[i];
+            i += 1;
+        }
+    }
 }
 
 // ── execve tracepoint ────────────────────────────────────────
@@ -63,6 +77,8 @@ fn try_handle_exec(ctx: &TracePointContext) -> Result<u32, i64> {
     let uid = (uid_gid & 0xFFFF_FFFF) as u32;
     let gid = (uid_gid >> 32) as u32;
 
+    let comm16 = get_comm();
+
     let mut entry = match EVENTS.reserve::<RawEvent>(0) {
         Some(e) => e,
         None    => return Ok(0),
@@ -79,12 +95,9 @@ fn try_handle_exec(ctx: &TracePointContext) -> Result<u32, i64> {
         (*event).uid       = uid;
         (*event).gid       = gid;
 
-        let comm_ptr = (*event).comm.as_mut_ptr();
-        aya_ebpf::helpers::bpf_get_current_comm(comm_ptr as *mut _, 64)
-            .map_err(|e| e)?;
+        fill_comm(event, &comm16);
 
-        // Check blocking rules against comm and uid
-        if comm_is_blocked(&(*event).comm) || uid_is_blocked(uid) {
+        if comm_is_blocked(&comm16) || uid_is_blocked(uid) {
             bpf_send_signal(9); // SIGKILL
             blocked = 1;
         }
@@ -122,6 +135,8 @@ fn try_handle_file_open(ctx: &TracePointContext) -> Result<u32, i64> {
     let uid = (uid_gid & 0xFFFF_FFFF) as u32;
     let gid = (uid_gid >> 32) as u32;
 
+    let comm16 = get_comm();
+
     let mut entry = match EVENTS.reserve::<RawEvent>(0) {
         Some(e) => e,
         None    => return Ok(0),
@@ -138,12 +153,9 @@ fn try_handle_file_open(ctx: &TracePointContext) -> Result<u32, i64> {
         (*event).uid       = uid;
         (*event).gid       = gid;
 
-        let comm_ptr = (*event).comm.as_mut_ptr();
-        aya_ebpf::helpers::bpf_get_current_comm(comm_ptr as *mut _, 64)
-            .map_err(|e| e)?;
+        fill_comm(event, &comm16);
 
-        // Check blocking rules
-        if comm_is_blocked(&(*event).comm) || uid_is_blocked(uid) {
+        if comm_is_blocked(&comm16) || uid_is_blocked(uid) {
             bpf_send_signal(9); // SIGKILL
             blocked = 1;
         }
@@ -184,6 +196,8 @@ fn try_handle_net_connect(ctx: &TracePointContext) -> Result<u32, i64> {
     let uid = (uid_gid & 0xFFFF_FFFF) as u32;
     let gid = (uid_gid >> 32) as u32;
 
+    let comm16 = get_comm();
+
     let mut entry = match EVENTS.reserve::<RawEvent>(0) {
         Some(e) => e,
         None    => return Ok(0),
@@ -200,9 +214,7 @@ fn try_handle_net_connect(ctx: &TracePointContext) -> Result<u32, i64> {
         (*event).uid       = uid;
         (*event).gid       = gid;
 
-        let comm_ptr = (*event).comm.as_mut_ptr();
-        aya_ebpf::helpers::bpf_get_current_comm(comm_ptr as *mut _, 64)
-            .map_err(|e| e)?;
+        fill_comm(event, &comm16);
 
         // syscalls/sys_enter_connect: args[1] = sockaddr ptr (offset 24)
         let sockaddr_ptr: *const u8 = ctx.read_at(24)?;
@@ -217,8 +229,7 @@ fn try_handle_net_connect(ctx: &TracePointContext) -> Result<u32, i64> {
 
         let dst_port = u16::from_be(port);
 
-        // Check blocking rules: comm, uid, or destination port
-        if comm_is_blocked(&(*event).comm) || uid_is_blocked(uid)
+        if comm_is_blocked(&comm16) || uid_is_blocked(uid)
             || BLOCKED_PORTS.get(&dst_port).is_some()
         {
             bpf_send_signal(9); // SIGKILL
@@ -239,7 +250,6 @@ fn try_handle_net_connect(ctx: &TracePointContext) -> Result<u32, i64> {
 
 // ── LSM hook: bprm_check_security (exec) ────────────────────
 // Returns -EPERM to proactively block exec before the process starts.
-// Complements the tracepoint (which fires concurrently / reactively).
 #[lsm(hook = "bprm_check_security")]
 pub fn lsm_exec(ctx: LsmContext) -> i32 {
     match try_lsm_exec(&ctx) {
@@ -256,12 +266,8 @@ fn try_lsm_exec(_ctx: &LsmContext) -> Result<i32, i64> {
         return Ok(-1); // -EPERM
     }
 
-    let mut comm = [0u8; 64];
-    unsafe {
-        aya_ebpf::helpers::bpf_get_current_comm(comm.as_mut_ptr() as *mut _, 64)
-            .map_err(|e| e)?;
-    }
-    if comm_is_blocked(&comm) {
+    let comm16 = get_comm();
+    if comm_is_blocked(&comm16) {
         return Ok(-1); // -EPERM
     }
 
@@ -286,12 +292,8 @@ fn try_lsm_file_open(_ctx: &LsmContext) -> Result<i32, i64> {
         return Ok(-1); // -EPERM
     }
 
-    let mut comm = [0u8; 64];
-    unsafe {
-        aya_ebpf::helpers::bpf_get_current_comm(comm.as_mut_ptr() as *mut _, 64)
-            .map_err(|e| e)?;
-    }
-    if comm_is_blocked(&comm) {
+    let comm16 = get_comm();
+    if comm_is_blocked(&comm16) {
         return Ok(-1); // -EPERM
     }
 

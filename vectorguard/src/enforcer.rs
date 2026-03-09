@@ -83,6 +83,7 @@ impl Enforcer {
     }
 
     /// Block a specific process name immediately (e.g. after slow path anomaly).
+    #[allow(dead_code)]
     pub fn block_comm(&mut self, comm: &str) {
         let key = comm_key(comm);
         if let Err(e) = self.comms.insert(key, 1u8, 0) {
@@ -93,6 +94,7 @@ impl Enforcer {
     }
 
     /// Block a specific UID immediately.
+    #[allow(dead_code)]
     pub fn block_uid(&mut self, uid: u32) {
         if let Err(e) = self.uids.insert(uid, 1u8, 0) {
             warn!("Failed to block uid {}: {}", uid, e);
@@ -102,6 +104,7 @@ impl Enforcer {
     }
 
     /// Block a destination port immediately.
+    #[allow(dead_code)]
     pub fn block_port(&mut self, port: u16) {
         if let Err(e) = self.ports.insert(port, 1u8, 0) {
             warn!("Failed to block port {}: {}", port, e);

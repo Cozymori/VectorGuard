@@ -11,7 +11,7 @@ mod scope;
 mod slow_path;
 mod tui;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 #[cfg(target_os = "linux")]
 use std::sync::Mutex;
 use std::sync::Arc;
@@ -21,33 +21,60 @@ use tracing::info;
 use config::AdapterBackend;
 use event::NormalizedEvent;
 
-const CONFIG_PATH: &str = "config.toml";
+const READY_FILE: &str = "/tmp/vectorguard.ready";
+
+fn parse_args() -> String {
+    let args: Vec<String> = std::env::args().collect();
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--config" | "-c" => {
+                if i + 1 < args.len() {
+                    return args[i + 1].clone();
+                }
+            }
+            s if s.starts_with("--config=") => {
+                return s.trim_start_matches("--config=").to_string();
+            }
+            "--help" | "-h" => {
+                eprintln!("Usage: vectorguard [--config <path>]");
+                eprintln!("  --config, -c <path>  Path to config.toml (default: config.toml)");
+                std::process::exit(0);
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    "config.toml".to_string()
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
-    let cfg = config::Config::load(CONFIG_PATH)?;
-    info!("VectorGuard starting | adapter={:?}", cfg.adapter.backend);
+    let config_path = parse_args();
+
+    let cfg = config::Config::load(&config_path)
+        .with_context(|| format!("Failed to load config: {}", config_path))?;
+    info!("VectorGuard starting | adapter={:?} | config={}", cfg.adapter.backend, config_path);
 
     let cfg_arc = Arc::new(RwLock::new(cfg.clone()));
 
     // ── Config Reload Broadcast Channel ──────────────────────────
-    // Produced by hotreload::watch, consumed by run_pipeline for live reconfiguration.
     let (reload_tx, reload_rx) = watch::channel(cfg.clone());
 
     // ── Hot Reload ────────────────────────────────────────────────
     if cfg.system.hot_reload {
         let cfg_arc2 = Arc::clone(&cfg_arc);
+        let config_path2 = config_path.clone();
         tokio::spawn(async move {
-            if let Err(e) = hotreload::watch(CONFIG_PATH, cfg_arc2, reload_tx).await {
+            if let Err(e) = hotreload::watch(&config_path2, cfg_arc2, reload_tx).await {
                 tracing::error!("Hot reload error: {}", e);
             }
         });
     }
 
     // ── Shared Kernel Enforcer (Linux only) ───────────────────────
-    // Initialized by the collector task, updated by run_pipeline on hot reload.
     #[cfg(target_os = "linux")]
     let enf_shared: Arc<Mutex<Option<enforcer::Enforcer>>> = Arc::new(Mutex::new(None));
 
@@ -67,7 +94,6 @@ async fn main() -> Result<()> {
             tokio::spawn(async move {
                 match collector::load_ebpf() {
                     Ok(mut ebpf) => {
-                        // Initialize kernel enforcer and populate from fast-path block rules
                         match enforcer::Enforcer::from_ebpf(&mut ebpf) {
                             Ok(mut enf) => {
                                 let tmp_fp = fast_path::FastPath::new(&cfg_snap.fast_path);
@@ -89,7 +115,7 @@ async fn main() -> Result<()> {
         }
 
         #[cfg(not(target_os = "linux"))]
-        let _ = AdapterBackend::NativeEbpf; // suppress unused warning
+        let _ = AdapterBackend::NativeEbpf;
 
         if cfg_snap.adapter.backend != AdapterBackend::NativeEbpf {
             let adapter = adapter::create(&cfg_snap);
@@ -120,20 +146,28 @@ async fn main() -> Result<()> {
         reload_rx, None,
     ));
 
+    // ── Signal ready (for K8s liveness probe) ────────────────────
+    if let Err(e) = std::fs::write(READY_FILE, "") {
+        tracing::warn!("Could not write ready file {}: {}", READY_FILE, e);
+    } else {
+        info!("Ready ({})", READY_FILE);
+    }
+
     // ── Run TUI ───────────────────────────────────────────────────
-    let config_text = std::fs::read_to_string(CONFIG_PATH).unwrap_or_default();
+    let config_text = std::fs::read_to_string(&config_path).unwrap_or_default();
     let app = tui::App::new(config_text);
-    tui::run(app, Some(proc_rx)).await
+    let result = tui::run(app, Some(proc_rx)).await;
+
+    // Cleanup ready file on exit
+    let _ = std::fs::remove_file(READY_FILE);
+
+    result
 }
 
 /// Event processing pipeline with live hot-reload support.
-///
-/// On each config change received via `reload_rx`, the scope filter, fast path,
-/// and slow path are rebuilt from the new config. On Linux, the kernel enforcer's
-/// eBPF blocking maps are also repopulated with any new block rules (D).
 async fn run_pipeline(
-    mut raw_rx:   mpsc::Receiver<NormalizedEvent>,
-    proc_tx:      mpsc::Sender<NormalizedEvent>,
+    mut raw_rx:       mpsc::Receiver<NormalizedEvent>,
+    proc_tx:          mpsc::Sender<NormalizedEvent>,
     mut scope_filter: scope::ScopeFilter,
     mut fast_path:    fast_path::FastPath,
     mut slow_path:    slow_path::SlowPath,
@@ -145,7 +179,6 @@ async fn run_pipeline(
 ) {
     loop {
         tokio::select! {
-            // ── Process incoming event ────────────────────────────
             ev = raw_rx.recv() => {
                 let Some(mut ev) = ev else { break };
 
@@ -157,11 +190,10 @@ async fn run_pipeline(
                 slow_path.analyze(&mut ev).await;
 
                 if proc_tx.send(ev).await.is_err() {
-                    break; // TUI exited
+                    break;
                 }
             }
 
-            // ── Hot reload: rebuild pipeline components ───────────
             Ok(()) = reload_rx.changed() => {
                 let new_cfg = reload_rx.borrow().clone();
                 tracing::info!("Pipeline reloading with new config");
@@ -170,7 +202,6 @@ async fn run_pipeline(
                 fast_path    = fast_path::FastPath::new(&new_cfg.fast_path);
                 slow_path    = slow_path::SlowPath::new(&new_cfg.slow_path).await;
 
-                // D: push updated block rules into eBPF blocking maps
                 #[cfg(target_os = "linux")]
                 if let Some(ref enf_arc) = enf_opt {
                     if let Ok(mut guard) = enf_arc.lock() {

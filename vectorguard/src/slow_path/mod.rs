@@ -1,12 +1,15 @@
+mod context;
 mod embedder;
 mod vectordb;
 
 pub use embedder::VECTOR_DIM;
 
+use std::sync::Mutex;
 use tracing::{debug, warn};
 
 use crate::config::SlowPathConfig;
 use crate::event::{Action, NormalizedEvent, Severity};
+use context::ContextWindow;
 use embedder::Embedder;
 use vectordb::VectorDb;
 
@@ -15,7 +18,9 @@ pub struct SlowPath {
     vectordb:  VectorDb,
     threshold: f32,
     enabled:   bool,
-    available: bool,   // whether Qdrant connection is available
+    available: bool,
+    /// Per-PID behavioral context window (interior mutability for &self access)
+    context:   Mutex<ContextWindow>,
 }
 
 impl SlowPath {
@@ -44,11 +49,12 @@ impl SlowPath {
             threshold: cfg.similarity_threshold,
             enabled:   cfg.enabled,
             available,
+            context:   Mutex::new(ContextWindow::new(cfg.time_window_secs, VECTOR_DIM)),
         }
     }
 
-    /// Embed the event as a vector and search Qdrant for similar behaviors.
-    /// If no similar behavior is found, treat as anomaly → escalate action/severity
+    /// Embed the event, blend with PID's behavioral context, then search Qdrant.
+    /// If no similar behavior is found, escalate to Alerted.
     pub async fn analyze(&self, event: &mut NormalizedEvent) {
         if !self.enabled || !self.available {
             return;
@@ -59,20 +65,36 @@ impl SlowPath {
             return;
         }
 
-        let vector = match self.embedder.embed(event).await {
+        let current_vector = match self.embedder.embed(event).await {
             Ok(v)  => v,
             Err(e) => { warn!("Embedding failed: {}", e); return; }
         };
 
-        let scores = self.vectordb.search(vector.clone(), 5, self.threshold).await;
+        // Blend current vector with this PID's recent behavioral history.
+        // α=0.7 weighting: current event is authoritative, context adds signal.
+        let search_vector = {
+            let mut ctx = self.context.lock().unwrap();
+            let blended = if let Some(ctx_vec) = ctx.context_vector(event.process.pid) {
+                blend(&current_vector, &ctx_vec, 0.7)
+            } else {
+                current_vector.clone()
+            };
+            // Push current event into context window *after* reading context
+            // so the current event doesn't pollute its own search
+            ctx.push(event.process.pid, event.timestamp, current_vector.clone());
+            blended
+        };
+
+        let scores = self.vectordb.search(search_vector.clone(), 5, self.threshold).await;
 
         let is_anomaly = match &scores {
-            Ok(s)  => s.is_empty(),  // no similar pattern found → anomaly
+            Ok(s)  => s.is_empty(),
             Err(e) => { warn!("Qdrant search failed: {}", e); false }
         };
 
         if is_anomaly && event.action == Action::Allowed {
             debug!(
+                pid    = event.process.pid,
                 binary = %event.process.binary,
                 "slow_path: anomalous behavior detected → escalating to alert"
             );
@@ -82,12 +104,24 @@ impl SlowPath {
             }
         }
 
-        // Store current event vector as baseline for future comparisons
+        // Store context-blended vector as baseline for future comparisons
         let payload = serde_json::json!({
             "pid":    event.process.pid,
             "binary": event.process.binary,
             "ts":     event.timestamp,
         });
-        let _ = self.vectordb.upsert(event.id, vector, payload).await;
+        let _ = self.vectordb.upsert(event.id, search_vector, payload).await;
     }
+}
+
+/// Linearly blend two unit vectors and re-normalize the result.
+/// `alpha` controls how much weight `a` (current event) gets vs `b` (context).
+fn blend(a: &[f32], b: &[f32], alpha: f32) -> Vec<f32> {
+    let beta = 1.0 - alpha;
+    let mut result: Vec<f32> = a.iter().zip(b.iter()).map(|(x, y)| alpha * x + beta * y).collect();
+    let norm: f32 = result.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm > 1e-9 {
+        result.iter_mut().for_each(|x| *x /= norm);
+    }
+    result
 }

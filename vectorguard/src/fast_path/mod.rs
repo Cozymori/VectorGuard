@@ -1,4 +1,4 @@
-mod rules;
+pub mod rules;
 
 use rules::RuleSet;
 use tracing::debug;
@@ -24,6 +24,12 @@ impl FastPath {
         };
 
         Self { ruleset, default_action, enabled: cfg.enabled }
+    }
+
+    /// Return a reference to all loaded rules (used by the kernel Enforcer)
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn rules(&self) -> &[rules::Rule] {
+        &self.ruleset.rules
     }
 
     /// Apply Fast Path rules to an event and update its action field

@@ -1,5 +1,7 @@
 #[cfg(target_os = "linux")]
 mod collector;
+#[cfg(target_os = "linux")]
+mod enforcer;
 mod config;
 mod event;
 mod adapter;
@@ -54,6 +56,20 @@ async fn main() -> Result<()> {
             tokio::spawn(async move {
                 match collector::load_ebpf() {
                     Ok(mut ebpf) => {
+                        // Initialize kernel-level enforcer from eBPF blocking maps
+                        match enforcer::Enforcer::from_ebpf(&mut ebpf) {
+                            Ok(mut enf) => {
+                                // Load block rules from fast path rule files into eBPF maps
+                                let fp_cfg = cfg_snap.fast_path.clone();
+                                let tmp_fp = fast_path::FastPath::new(&fp_cfg);
+                                if let Err(e) = enf.load_rules(tmp_fp.rules()) {
+                                    tracing::warn!("Enforcer rule load failed: {}", e);
+                                }
+                                // Keep enforcer alive for the duration of the collector task
+                                let _enf = enf;
+                            }
+                            Err(e) => tracing::warn!("Enforcer init failed: {}", e),
+                        }
                         if let Err(e) = collector::run_collector(&mut ebpf, tx).await {
                             tracing::error!("eBPF collector error: {}", e);
                         }

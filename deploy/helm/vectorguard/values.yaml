@@ -1,0 +1,83 @@
+# ── Image ──────────────────────────────────────────────────────
+image:
+  repository: ghcr.io/cozymori/vectorguard
+  tag: latest
+  pullPolicy: Always
+
+# ── VectorGuard Config ────────────────────────────────────────
+config:
+  logLevel: info
+  hotReload: true
+
+  scope:
+    targets: []
+    includeNamespaces: []
+    excludeNamespaces:
+      - kube-system
+      - kube-public
+      - kube-node-lease
+    labelSelectors: []
+
+  adapter:
+    backend: tetragon       # tetragon | falco | auditd | native_ebpf
+    tetragon:
+      endpoint: "http://tetragon.kube-system.svc.cluster.local:54321"
+    falco:
+      logPath: "/var/log/falco/events.json"
+    auditd:
+      logPath: "/var/log/audit/audit.log"
+
+  fastPath:
+    enabled: true
+    defaultAction: log      # block | alert | log
+
+  slowPath:
+    enabled: true
+    timeWindowSecs: 60
+    similarityThreshold: 0.85
+    embedder:
+      backend: local        # local | openai
+      apiKeySecret: ""      # K8s secret name holding OPENAI_API_KEY
+    vectordb:
+      backend: qdrant
+      collection: behaviors
+
+# ── Qdrant (built-in, optional) ───────────────────────────────
+qdrant:
+  enabled: true             # set false to use external Qdrant
+  externalUrl: ""           # used when enabled: false
+  storage: 5Gi
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "1"
+      memory: "1Gi"
+
+# ── DaemonSet settings ────────────────────────────────────────
+daemonset:
+  # Use privileged: true if capability-based approach fails on your kernel
+  privileged: false
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+  tolerations:
+    - operator: Exists
+      effect: NoSchedule
+    - operator: Exists
+      effect: NoExecute
+  nodeSelector:
+    kubernetes.io/os: linux
+
+# ── RBAC ──────────────────────────────────────────────────────
+rbac:
+  create: true
+
+serviceAccount:
+  create: true
+  name: ""

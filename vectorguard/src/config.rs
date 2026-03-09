@@ -31,8 +31,18 @@ pub struct SystemConfig {
 // ── Scope ─────────────────────────────────────────────────────
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ScopeConfig {
+    /// Glob patterns matched against process binary name.
+    /// Empty = monitor all processes.
     pub targets:              Vec<String>,
+    /// K8s namespace glob patterns to include (K8s events only).
+    /// Empty = include all namespaces.
+    pub include_namespaces:   Vec<String>,
+    /// K8s namespace glob patterns to exclude.
+    /// Takes precedence over include_namespaces.
     pub exclude_namespaces:   Vec<String>,
+    /// K8s label selectors: "key=value" pairs that must ALL match.
+    /// Empty = no label filtering.
+    pub label_selectors:      Vec<String>,
 }
 
 // ── Adapter ───────────────────────────────────────────────────

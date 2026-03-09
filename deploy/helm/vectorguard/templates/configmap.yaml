@@ -1,0 +1,76 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "vectorguard.fullname" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vectorguard.labels" . | nindent 4 }}
+data:
+  config.toml: |
+    [system]
+    log_level  = {{ .Values.config.logLevel | quote }}
+    hot_reload = {{ .Values.config.hotReload }}
+
+    [scope]
+    targets             = {{ .Values.config.scope.targets | toJson }}
+    include_namespaces  = {{ .Values.config.scope.includeNamespaces | toJson }}
+    exclude_namespaces  = {{ .Values.config.scope.excludeNamespaces | toJson }}
+    label_selectors     = {{ .Values.config.scope.labelSelectors | toJson }}
+
+    [adapter]
+    backend = {{ .Values.config.adapter.backend | quote }}
+
+    [adapter.tetragon]
+    endpoint = {{ .Values.config.adapter.tetragon.endpoint | quote }}
+
+    [adapter.falco]
+    log_path = {{ .Values.config.adapter.falco.logPath | quote }}
+
+    [adapter.auditd]
+    log_path = {{ .Values.config.adapter.auditd.logPath | quote }}
+
+    [fast_path]
+    enabled        = {{ .Values.config.fastPath.enabled }}
+    rules_path     = "/etc/vectorguard/rules"
+    default_action = {{ .Values.config.fastPath.defaultAction | quote }}
+
+    [slow_path]
+    enabled              = {{ .Values.config.slowPath.enabled }}
+    time_window_secs     = {{ .Values.config.slowPath.timeWindowSecs }}
+    similarity_threshold = {{ .Values.config.slowPath.similarityThreshold }}
+
+    [slow_path.embedder]
+    backend     = {{ .Values.config.slowPath.embedder.backend | quote }}
+    model       = ""
+    api_key_env = {{ if .Values.config.slowPath.embedder.apiKeySecret }}"OPENAI_API_KEY"{{ else }}""{{ end }}
+
+    [slow_path.vectordb]
+    backend    = {{ .Values.config.slowPath.vectordb.backend | quote }}
+    url        = {{ include "vectorguard.qdrantUrl" . | quote }}
+    collection = {{ .Values.config.slowPath.vectordb.collection | quote }}
+
+    [tui]
+    refresh_rate_ms = 200
+    theme           = "dark"
+
+  default.toml: |
+    [[rules]]
+    name              = "block-shadow-read"
+    action            = "block"
+    match_path_prefix = ["/etc/shadow"]
+
+    [[rules]]
+    name           = "block-ptrace"
+    action         = "block"
+    match_process  = ["strace", "ltrace", "gdb"]
+
+    [[rules]]
+    name            = "alert-webserver-shell"
+    action          = "alert"
+    match_process   = ["nginx", "apache2", "httpd"]
+    match_exec_path = ["/bin/sh", "/bin/bash", "/usr/bin/python*"]
+
+    [[rules]]
+    name          = "alert-privilege-escalation"
+    action        = "alert"
+    match_process = ["sudo", "su", "pkexec"]

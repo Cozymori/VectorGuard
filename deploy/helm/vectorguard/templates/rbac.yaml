@@ -1,0 +1,30 @@
+{{- if .Values.rbac.create -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "vectorguard.fullname" . }}
+  labels:
+    {{- include "vectorguard.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "namespaces", "nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "vectorguard.fullname" . }}
+  labels:
+    {{- include "vectorguard.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "vectorguard.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: {{ include "vectorguard.fullname" . }}
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

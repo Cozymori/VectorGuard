@@ -4,8 +4,14 @@ hot_reload = true
 
 # ── Monitoring Targets ────────────────────────────────────────
 [scope]
-targets = ["nginx", "postgres", "sshd"]   # glob support planned
-exclude_namespaces = ["kube-system"]       # k8s only, ignored on bare-metal
+# Glob patterns matched against process binary name. Empty = all processes.
+targets = []
+# K8s namespace glob patterns to include (non-empty = allowlist). Non-K8s events unaffected.
+include_namespaces = []
+# K8s namespace glob patterns to exclude (takes precedence over include). Non-K8s events unaffected.
+exclude_namespaces = ["kube-system", "kube-public", "kube-node-lease"]
+# K8s pod label selectors: ALL "key=value" pairs must match. Empty = no label filter.
+label_selectors = []
 
 # ── Adapter Selection ─────────────────────────────────────────
 [adapter]

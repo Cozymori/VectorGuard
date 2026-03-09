@@ -1,0 +1,77 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vectorguard-config
+  namespace: vectorguard
+  labels:
+    app.kubernetes.io/name: vectorguard
+data:
+  config.toml: |
+    [system]
+    log_level  = "info"
+    hot_reload = true
+
+    [scope]
+    targets             = []
+    include_namespaces  = []
+    exclude_namespaces  = ["kube-system", "kube-public", "kube-node-lease"]
+    label_selectors     = []
+
+    [adapter]
+    backend = "tetragon"
+
+    [adapter.tetragon]
+    endpoint = "http://tetragon.kube-system.svc.cluster.local:54321"
+
+    [adapter.falco]
+    log_path = "/var/log/falco/events.json"
+
+    [adapter.auditd]
+    log_path = "/var/log/audit/audit.log"
+
+    [fast_path]
+    enabled        = true
+    rules_path     = "/etc/vectorguard/rules"
+    default_action = "log"
+
+    [slow_path]
+    enabled              = true
+    time_window_secs     = 60
+    similarity_threshold = 0.85
+
+    [slow_path.embedder]
+    backend     = "local"
+    model       = ""
+    api_key_env = ""
+
+    [slow_path.vectordb]
+    backend    = "qdrant"
+    url        = "http://qdrant.vectorguard.svc.cluster.local:6333"
+    collection = "behaviors"
+
+    [tui]
+    refresh_rate_ms = 200
+    theme           = "dark"
+
+  default.toml: |
+    # Default fast-path rules
+    [[rules]]
+    name   = "block-shadow-read"
+    action = "block"
+    match_path_prefix = ["/etc/shadow"]
+
+    [[rules]]
+    name   = "block-ptrace"
+    action = "block"
+    match_process = ["strace", "ltrace", "gdb"]
+
+    [[rules]]
+    name   = "alert-webserver-shell"
+    action = "alert"
+    match_process      = ["nginx", "apache2", "httpd"]
+    match_exec_path    = ["/bin/sh", "/bin/bash", "/usr/bin/python*"]
+
+    [[rules]]
+    name   = "alert-privilege-escalation"
+    action = "alert"
+    match_process = ["sudo", "su", "pkexec"]

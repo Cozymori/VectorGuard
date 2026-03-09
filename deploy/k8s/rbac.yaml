@@ -1,0 +1,38 @@
+# ServiceAccount used by VectorGuard pods
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vectorguard
+  namespace: vectorguard
+  labels:
+    app.kubernetes.io/name: vectorguard
+---
+# ClusterRole: read-only access to pods, namespaces, nodes (for K8s metadata enrichment)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: vectorguard
+  labels:
+    app.kubernetes.io/name: vectorguard
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "namespaces", "nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create"]   # for writing K8s audit events
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vectorguard
+  labels:
+    app.kubernetes.io/name: vectorguard
+subjects:
+  - kind: ServiceAccount
+    name: vectorguard
+    namespace: vectorguard
+roleRef:
+  kind: ClusterRole
+  name: vectorguard
+  apiGroup: rbac.authorization.k8s.io

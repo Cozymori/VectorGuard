@@ -3,8 +3,6 @@
 
 #![cfg_attr(not(feature = "user"), no_std)]
 
-#[cfg(feature = "user")]
-use serde::{Deserialize, Serialize};
 
 /// Raw event passed from kernel → userspace via eBPF Ring Buffer
 /// C-compatible layout (shared memory with eBPF)

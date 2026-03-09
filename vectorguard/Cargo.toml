@@ -30,5 +30,4 @@ aya = { version = "0.13", features = ["async_tokio"] }
 aya-log = "0.2"
 
 [build-dependencies]
-aya-build = "0.1"
 tonic-build = "0.12"

@@ -2,7 +2,6 @@
 
 use anyhow::{Context, Result};
 use aya::{maps::RingBuf, programs::{Lsm, TracePoint}, Ebpf};
-use bytes::BytesMut;
 use std::{
     net::Ipv4Addr,
     sync::atomic::{AtomicU64, Ordering},

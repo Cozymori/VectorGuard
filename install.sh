@@ -81,13 +81,13 @@ install_deps_debian() {
   apt-get update -qq
   apt-get install -y --no-install-recommends \
     clang llvm libelf-dev pkg-config \
-    protobuf-compiler \
+    protobuf-compiler libssl-dev \
     linux-headers-"$(uname -r)" \
     curl git ca-certificates \
     2>/dev/null || \
   apt-get install -y --no-install-recommends \
     clang llvm libelf-dev pkg-config \
-    protobuf-compiler \
+    protobuf-compiler libssl-dev \
     linux-headers-generic \
     curl git ca-certificates
 }
@@ -95,12 +95,12 @@ install_deps_debian() {
 install_deps_rhel() {
   dnf install -y \
     clang llvm elfutils-libelf-devel pkgconfig \
-    protobuf-compiler \
+    protobuf-compiler openssl-devel \
     kernel-headers \
     curl git ca-certificates 2>/dev/null || \
   yum install -y \
     clang llvm elfutils-libelf-devel pkgconfig \
-    protobuf-compiler \
+    protobuf-compiler openssl-devel \
     kernel-headers \
     curl git ca-certificates
 }
@@ -108,7 +108,7 @@ install_deps_rhel() {
 install_deps_arch() {
   pacman -Sy --noconfirm \
     clang llvm libelf \
-    protobuf \
+    protobuf openssl \
     linux-headers \
     curl git
 }

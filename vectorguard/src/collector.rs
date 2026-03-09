@@ -40,11 +40,12 @@ pub fn load_ebpf() -> Result<Ebpf> {
 /// does not have BPF_LSM support (CONFIG_BPF_LSM=y).
 fn attach_lsm(ebpf: &mut Ebpf, prog: &str, hook: &str) {
     let result = (|| -> Result<()> {
+        let btf = aya::Btf::from_sys_fs()?;
         let program: &mut Lsm = ebpf
             .program_mut(prog)
             .with_context(|| format!("LSM program {} not found", prog))?
             .try_into()?;
-        program.load(hook, aya::Btf::from_sys_fs()?)?;
+        program.load(hook, &btf)?;
         program.attach()?;
         Ok(())
     })();

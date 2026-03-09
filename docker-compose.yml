@@ -1,23 +1,33 @@
 services:
   vectorguard:
     build: .
-    privileged: true                     # eBPF 로드에 필요
-    pid: host                            # 호스트 PID 네임스페이스 접근
+    privileged: true          # Required for eBPF program loading
+    pid: host                 # Host PID namespace access for process tree visibility
     network_mode: host
     volumes:
       - /sys/kernel/debug:/sys/kernel/debug:ro
       - /sys/fs/bpf:/sys/fs/bpf
       - ./vectorguard/config.toml:/etc/vectorguard/config.toml
+      - ./rules:/etc/vectorguard/rules:ro
     environment:
       - RUST_LOG=info
+    command: ["--config", "/etc/vectorguard/config.toml"]
+    depends_on:
+      qdrant:
+        condition: service_healthy
 
-  # Slow Path용 Vector DB
+  # Vector database for Slow Path anomaly detection
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.9.0
     ports:
       - "6333:6333"
     volumes:
       - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
   qdrant_data:

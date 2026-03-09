@@ -1,259 +1,293 @@
 # VectorGuard — Work Report
 
-## Project Overview
-
-**VectorGuard** is a Linux runtime security monitoring daemon written in Rust. It intercepts system calls via eBPF, evaluates events through a two-stage detection pipeline, and displays results in a terminal UI.
-
 **Repository:** https://github.com/Cozymori/VectorGuard  
-**Language:** Rust (Workspace: 3 crates)  
-**Total source lines:** 2,916 (22 `.rs` files)  
-**Test results:** 18 passed, 0 failed
+**Language:** Rust (2024 edition)  
+**Date:** 2026-03-09
 
 ---
 
-## Architecture
+## 1. Project Overview
+
+VectorGuard is a Linux runtime security daemon that monitors host system calls and process behavior in real time, classifies events via a dual-path detection engine, and enforces security policy at the kernel level using eBPF. It is designed to operate in both bare-metal and Kubernetes environments and can ingest events from multiple sources: its own native eBPF probes, Tetragon (gRPC streaming), Falco (JSON logs), or auditd (text logs).
+
+---
+
+## 2. Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    Event Sources                        │
-│  ┌─────────────┐  ┌───────┐  ┌────────┐  ┌──────────┐ │
-│  │ Native eBPF │  │ Falco │  │ Auditd │  │ Tetragon │ │
-│  └──────┬──────┘  └───┬───┘  └───┬────┘  └────┬─────┘ │
-└─────────┼─────────────┼──────────┼─────────────┼───────┘
-          └─────────────┴──────────┴─────────────┘
-                              │ mpsc channel (raw)
-                              ▼
-                    ┌─────────────────┐
-                    │  Scope Filter   │  targets glob match
-                    └────────┬────────┘
-                             │
-                    ┌────────▼────────┐
-                    │   Fast Path     │  TOML rule engine
-                    │  (sync, <1ms)   │  block / alert / log
-                    └────────┬────────┘
-                             │
-                    ┌────────▼────────┐
-                    │   Slow Path     │  vector embedding
-                    │  (async)        │  + Qdrant similarity
-                    └────────┬────────┘
-                             │ mpsc channel (processed)
-                    ┌────────▼────────┐
-                    │   TUI (ratatui) │  Dashboard / Events / Config
-                    └─────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│  Event Sources                                                      │
+│  ┌─────────────┐  ┌──────────┐  ┌────────┐  ┌────────────────────┐ │
+│  │ Native eBPF │  │ Tetragon │  │ Falco  │  │ auditd             │ │
+│  │ (tracepoint │  │ (gRPC    │  │ (JSON  │  │ (text log tail)    │ │
+│  │  + LSM hook)│  │ stream)  │  │ tail)  │  │                    │ │
+│  └──────┬──────┘  └────┬─────┘  └───┬────┘  └────────┬───────────┘ │
+│         └──────────────┴────────────┴─────────────────┘             │
+│                               │ NormalizedEvent                     │
+└───────────────────────────────┼─────────────────────────────────────┘
+                                ▼
+              ┌─────────────────────────────┐
+              │  Scope Filter               │
+              │  (glob match on binary name)│
+              └──────────────┬──────────────┘
+                             ▼
+              ┌─────────────────────────────┐
+              │  Fast Path (sync)           │
+              │  TOML rule engine           │
+              │  → Block / Alert / Log      │
+              └──────────────┬──────────────┘
+                             ▼
+              ┌─────────────────────────────┐
+              │  Slow Path (async)          │
+              │  Per-PID context window     │
+              │  → Embed → Qdrant search    │
+              │  → Anomaly detection        │
+              └──────────────┬──────────────┘
+                             ▼
+              ┌─────────────────────────────┐
+              │  ratatui TUI                │
+              │  (real-time event stream)   │
+              └─────────────────────────────┘
+
+Kernel-level enforcement (Linux only):
+  eBPF blocking maps ← Enforcer ← FastPath block rules
+  tracepoint: bpf_send_signal(SIGKILL)
+  LSM hook:   return -EPERM
 ```
 
 ---
 
-## Crate Structure
+## 3. Crate Structure
 
-| Crate | Purpose |
-|-------|---------|
-| `vectorguard` | Main daemon — pipeline, TUI, adapters |
-| `vectorguard-ebpf` | eBPF kernel program (no_std) |
-| `vectorguard-common` | Shared types between kernel/userspace |
-
----
-
-## Components Implemented
-
-### 1. eBPF Kernel Program (`vectorguard-ebpf`)
-- `execve` tracepoint → captures process execution
-- `openat` tracepoint → captures file access with flags
-- `connect` tracepoint → captures outbound network connections
-- Ring buffer (1 MB) for kernel→userspace event transport
-
-### 2. Event Pipeline (`vectorguard-common`, `event/mod.rs`)
-- `RawEvent` — C-compatible struct shared between eBPF and userspace
-- `NormalizedEvent` — rich userspace event type with:
-  - `ProcessInfo` (pid, ppid, uid, gid, binary, args, cwd)
-  - `EventType` enum (Exec, FileAccess, Network, Privilege, Signal)
-  - `Severity` (Info → Critical), `Action` (Allowed/Blocked/Killed/Alerted)
-  - `K8sMeta` (pod, namespace, container) for Kubernetes environments
-
-### 3. Event Collectors
-
-#### Native eBPF (`collector.rs`)
-- Loads compiled eBPF object via `aya`
-- Attaches tracepoints at runtime
-- Async Ring Buffer polling → `NormalizedEvent`
-
-#### Falco Adapter (`adapter/falco.rs`)
-- Tails Falco JSON log file asynchronously
-- Maps Falco priority (Emergency→Critical, Warning→Medium, etc.)
-- Parses `execve`, `openat`, `connect` event types
-
-#### Auditd Adapter (`adapter/auditd.rs`)
-- Tails `/var/log/audit/audit.log`
-- Parses SYSCALL records (key=value format)
-- Maps syscall numbers to event types (x86_64)
-
-#### Tetragon Adapter (`adapter/tetragon.rs`)
-- Full gRPC streaming client via `tonic`
-- Proto schema: `proto/tetragon.proto` (Tetragon API v1)
-- Subscribes to `ProcessExec`, `ProcessExit`, `ProcessKprobe`
-- Converts kprobe function names → FileAccess / Network / Privilege
-- Populates `K8sMeta` from Pod information
-- Auto-reconnect with 5s backoff on stream drop
-
-### 4. Scope Filter (`scope.rs`)
-- Filters events by `config.scope.targets`
-- Glob pattern support (`nginx`, `py*`, etc.)
-- Empty target list = monitor everything
-
-### 5. Fast Path (`fast_path/`)
-- Rule engine loading `.toml` rule files from `rules_path` directory
-- Rule conditions (AND logic):
-  - `match_process` — glob on binary name
-  - `match_path_prefix` — file path prefix (FileAccess only)
-  - `match_exec_path` — exec path prefix (Exec only)
-  - `match_port` — destination port list (Network only)
-  - `match_uid` — exact UID match
-- Actions: `block`, `alert`, `log`, `allow`
-- First-match-wins evaluation
-- Falls back to built-in rules if no rule files found
-
-**Built-in rules:**
-
-| Rule | Trigger | Action |
-|------|---------|--------|
-| block-shadow-access | Access to `/etc/shadow`, `/etc/sudoers` | Block |
-| alert-shell-exec-by-service | nginx/postgres spawning `/bin/sh` | Alert |
-| alert-outbound-unusual-port | Ports 4444, 1337, 31337, etc. | Alert |
-| alert-root-nettools | root running wget/curl/nc | Alert |
-
-### 6. Slow Path (`slow_path/`)
-- **Embedder** — converts events to 64-dim feature vectors:
-  - Dimensions 0–4: event type one-hot encoding
-  - Dimension 5: severity
-  - Dimension 6: UID (root = 1.0)
-  - Dimensions 7–22: process binary name bytes
-  - Dimensions 23–62: event-specific features (path, port, syscall)
-  - Unit-normalized (enables cosine similarity)
-  - OpenAI `text-embedding-ada-002` backend also supported
-- **VectorDb** — Qdrant REST API client:
-  - Auto-creates collection on startup
-  - Upserts event vectors after each evaluation
-  - Cosine similarity search against past events
-- **Anomaly detection**: no similar past events found → escalate to `Alerted`, raise severity to at least `Medium`
-- Gracefully degrades if Qdrant is unavailable
-
-### 7. TUI (`tui/`)
-- Built with `ratatui` + `crossterm`
-- Three tabs: **Dashboard**, **Events**, **Config**
-- Dashboard: live stats cards (total / blocked / alerts / high-severity) + recent events table
-- Events tab: scrollable full event list (↑↓ / j/k)
-- Config tab: read-only `config.toml` viewer
-- `tokio::select!` — simultaneous keyboard input and event stream handling
-- Non-blocking key polling to avoid starving the event channel
-
-### 8. Hot Reload (`hotreload.rs`)
-- File watcher via `notify` crate
-- Detects `config.toml` modifications
-- Atomically updates `Arc<RwLock<Config>>` — zero downtime
-
-### 9. Build System (`build.rs`)
-- **Proto compilation**: `tonic-build` → generates Tetragon gRPC client (all platforms)
-- **eBPF compilation**: `aya-build` cross-compiles for `bpfel-unknown-none` (Linux only, no-op on macOS)
-- `OUT_DIR`-based artifact embedding for eBPF binary
+| Crate | Role |
+|---|---|
+| `vectorguard-common` | Shared kernel/userspace types (`RawEvent`, `EventKind`, payloads). Compiles in both `no_std` (eBPF) and `std` (userspace) |
+| `vectorguard-ebpf` | eBPF kernel program: tracepoints + LSM hooks + blocking maps |
+| `vectorguard` | Main daemon: collector, enforcer, adapters, fast/slow path, TUI, hot reload |
 
 ---
 
-## Configuration (`config.toml`)
+## 4. Source Files
+
+| File | Lines | Description |
+|---|---|---|
+| `vectorguard-common/src/lib.rs` | 91 | `RawEvent`, `EventKind`, `EventPayload` union, per-event payloads, `blocked` flag |
+| `vectorguard-ebpf/src/main.rs` | 304 | eBPF tracepoints (execve/openat/connect), LSM hooks, 3 blocking HashMaps |
+| `vectorguard/src/main.rs` | 187 | Startup orchestration, hot-reload wiring, shared enforcer, pipeline task |
+| `vectorguard/src/config.rs` | 152 | Full config schema, TOML deserialization |
+| `vectorguard/src/event/mod.rs` | 75 | `NormalizedEvent`, `EventType`, `Action`, `Severity`, `ProcessInfo` |
+| `vectorguard/src/collector.rs` | 222 | eBPF loader, tracepoint/LSM attachment, ring buffer polling, event normalization |
+| `vectorguard/src/enforcer.rs` | 135 | Userspace owner of eBPF blocking maps; `load_rules`, `block_comm/uid/port` |
+| `vectorguard/src/scope.rs` | 90 | Glob-based process scope filter (3 unit tests) |
+| `vectorguard/src/hotreload.rs` | 45 | `notify` watcher; broadcasts new config via `watch::Sender<Config>` |
+| `vectorguard/src/fast_path/mod.rs` | 52 | `FastPath` struct; rule evaluation, exposes rules slice for Enforcer |
+| `vectorguard/src/fast_path/rules.rs` | 364 | TOML rule DSL, `RuleSet`, `Rule`, `RuleAction`; 18 unit tests |
+| `vectorguard/src/slow_path/context.rs` | 119 | `ContextWindow`: per-PID time-windowed vector ring; 4 unit tests |
+| `vectorguard/src/slow_path/mod.rs` | 127 | `SlowPath`: embed → context blend → Qdrant search → anomaly escalation |
+| `vectorguard/src/slow_path/embedder.rs` | 230 | Local 64-dim deterministic embedder + OpenAI backend; 6 unit tests |
+| `vectorguard/src/slow_path/vectordb.rs` | 105 | Qdrant REST client: `ensure_collection`, `upsert`, `search` |
+| `vectorguard/src/adapter/mod.rs` | — | Adapter factory + `run` loop |
+| `vectorguard/src/adapter/tetragon.rs` | 276 | Tetragon gRPC streaming client (tonic); auto-reconnect with 5 s backoff |
+| `vectorguard/src/adapter/falco.rs` | 155 | Async JSON log tail |
+| `vectorguard/src/adapter/auditd.rs` | 156 | Async auditd SYSCALL record parser |
+| `vectorguard/src/tui/mod.rs` | 65 | TUI entry point; `tokio::select!` on events + keyboard |
+| `vectorguard/src/tui/app.rs` | 142 | `App` state model |
+| `vectorguard/src/tui/render.rs` | 205 | ratatui layout and widget rendering |
+| `vectorguard/build.rs` | — | Compiles Tetragon protobuf (tonic-build) + eBPF binary (aya-build, Linux only) |
+| `rules/default.toml` | — | Default fast-path rules (block shadow access, alert webserver shell spawns, etc.) |
+
+**Total:** ~3,400 lines of Rust
+
+---
+
+## 5. Implemented Features
+
+### 5.1 eBPF Kernel Program
+
+Three tracepoints monitor system calls:
+- `sys_enter_execve` → `handle_exec`
+- `sys_enter_openat` → `handle_file_open`
+- `sys_enter_connect` → `handle_net_connect`
+
+Each handler reads process metadata (PID, UID, comm), checks three eBPF blocking HashMaps, and if matched:
+1. Calls `bpf_send_signal(9)` — SIGKILL delivered in-kernel with no userspace round-trip
+2. Sets `RawEvent.blocked = 1` so userspace reflects the action accurately
+
+Two LSM BPF programs provide proactive enforcement (requires `CONFIG_BPF_LSM=y`, kernel ≥ 5.7):
+- `bprm_check_security` → `lsm_exec`: returns `-EPERM` before exec completes
+- `file_open` → `lsm_file_open`: returns `-EPERM` before the file descriptor is created
+
+LSM attachment is gracefully skipped with a warning if the kernel does not support it.
+
+### 5.2 Kernel Enforcer (`enforcer.rs`)
+
+The `Enforcer` struct takes ownership of the three eBPF blocking maps from the loaded `Ebpf` handle via `take_map()`. The kernel retains the maps via reference counting; the Enforcer holds the userspace file descriptors.
+
+- `from_ebpf(ebpf)` — extracts `BLOCKED_COMMS`, `BLOCKED_PORTS`, `BLOCKED_UIDS`
+- `load_rules(rules)` — clears maps and repopulates from all `action = Block` rules
+- `block_comm(name)` / `block_uid(uid)` / `block_port(port)` — real-time map updates for slow-path anomalies
+- Shared as `Arc<Mutex<Option<Enforcer>>>` between the collector task and `run_pipeline`
+
+### 5.3 Fast Path Rule Engine (`fast_path/rules.rs`)
+
+TOML-configurable rule DSL supporting:
+- `match_process` — glob match on binary name (comm)
+- `match_path_prefix` — file access path prefix
+- `match_exec_path` — exec filename prefix
+- `match_port` — destination TCP port list
+- `match_uid` — specific UID
+
+Actions: `block`, `alert`, `log`, `allow`. Builtin rules include block-shadow-access, alert-webserver-shell, block-ptrace. 18 unit tests.
+
+### 5.4 Slow Path Anomaly Detection
+
+**Embedder:** Converts a `NormalizedEvent` into a 64-dimensional feature vector using a deterministic local algorithm (event type one-hot, severity, UID, binary name bytes, path/port/syscall bytes). Unit-normalized for cosine similarity. OpenAI `text-embedding-ada-002` backend also available.
+
+**Context Window (`slow_path/context.rs`):** Per-PID ring buffer of `(timestamp_ns, vector)` pairs within a configurable time window (`time_window_secs` in config). On each event:
+1. Read PID's existing context vector (recency-weighted average)
+2. Blend current vector with context at α=0.7 (current event is authoritative)
+3. Push current vector into the ring (after search, not before)
+
+This "behavioral fingerprint" reduces false positives from isolated anomalous-looking events that are actually consistent with the process's recent activity.
+
+**VectorDB:** Qdrant REST API client. `search` with cosine similarity threshold; `upsert` stores context-blended vectors as baselines. If no similar pattern found → escalate to `Action::Alerted`, raise severity to at least `Medium`.
+
+### 5.5 Multi-Source Adapters
+
+| Adapter | Protocol | Notes |
+|---|---|---|
+| NativeEbpf | eBPF Ring Buffer | Linux only; zero-copy via `AsyncFd` |
+| Tetragon | gRPC streaming | tonic client; processes `ProcessExec`, `ProcessExit`, `ProcessKprobe`; 5 s reconnect backoff |
+| Falco | JSON log tail | async file tail with `tokio::fs` |
+| Auditd | text log tail | SYSCALL record parser with nr→name mapping |
+
+All adapters normalize to `NormalizedEvent` before the pipeline.
+
+### 5.6 Hot Reload + Live Reconfiguration (C + D)
+
+`hotreload.rs` watches `config.toml` with the `notify` crate (500 ms poll interval). On change:
+1. Parses new config, writes to `Arc<RwLock<Config>>`
+2. Sends new config via `tokio::sync::watch::Sender<Config>`
+
+`run_pipeline` uses `tokio::select!` to interleave event processing with config-change notifications. On reload:
+- `ScopeFilter` rebuilt from new `scope.targets`
+- `FastPath` reloaded from new rules directory
+- `SlowPath` reinitialized (new Qdrant collection / threshold / time window)
+- Kernel enforcer's eBPF blocking maps repopulated from new block rules (D)
+
+### 5.7 Scope Filter
+
+Glob pattern matching on process binary name. Empty `targets` list = monitor everything. Filters events before they enter the pipeline to avoid wasting Fast/Slow Path resources on irrelevant processes.
+
+### 5.8 TUI (ratatui)
+
+Three-panel terminal UI:
+- **Event stream** — scrolling list of normalized events with color-coded severity and action
+- **Statistics** — event counts per type, blocked/alerted/allowed totals
+- **Config** — live view of current `config.toml`
+
+`tokio::select!` drives both keyboard input (`crossterm` event-stream) and the event channel.
+
+---
+
+## 6. Configuration Schema
 
 ```toml
+[system]
+log_level  = "info"
+hot_reload = true
+
+[scope]
+targets             = []          # [] = monitor all processes
+exclude_namespaces  = []
+
 [adapter]
-backend = "tetragon"   # tetragon | falco | auditd | native_ebpf
+backend = "native_ebpf"           # native_ebpf | tetragon | falco | auditd
+
+[adapter.tetragon]
+endpoint = "http://localhost:54321"
 
 [fast_path]
-rules_path = "../rules"
-default_action = "block"
+enabled        = true
+rules_path     = "rules/"
+default_action = "log"
 
 [slow_path]
-enabled = true
+enabled              = true
+time_window_secs     = 60         # context aggregation window per PID
 similarity_threshold = 0.85
 
 [slow_path.embedder]
-backend = "local"      # local | openai | claude
+backend     = "local"             # local | openai | claude
+model       = "text-embedding-ada-002"
+api_key_env = "OPENAI_API_KEY"
 
 [slow_path.vectordb]
-backend = "qdrant"
-url = "http://localhost:6333"
+backend    = "qdrant"
+url        = "http://localhost:6333"
+collection = "vectorguard"
 ```
 
 ---
 
-## Test Coverage
+## 7. Build & Run
 
-| Module | Tests | What is tested |
-|--------|-------|----------------|
-| `fast_path::rules` | 8 | builtin rules, glob, uid, port, first-match-wins |
-| `slow_path::embedder` | 6 | dimension, normalization, determinism, differentiation |
-| `scope` | 3 | empty targets, exact match, glob match |
-| `config` | 1 | load + field validation |
-| **Total** | **18** | **18/18 pass** |
+### Dependencies
+- Rust toolchain (nightly for eBPF target)
+- `protoc` (Protobuf compiler) — for Tetragon gRPC code generation
+- Linux kernel ≥ 5.7 with `CONFIG_BPF_LSM=y` for LSM enforcement
+- Qdrant (optional) — for slow path anomaly detection
 
----
+### Build
+```bash
+# Non-Linux / dev check
+cargo check -p vectorguard
 
-## Commit History
-
-| Hash | Description |
-|------|-------------|
-| `a65983c` | Initial implementation — full pipeline, Fast/Slow path, adapters, TUI |
-| `9f5f4e7` | Translate all Korean comments and strings to English |
-| `bea98da` | build.rs, scope filtering, 18 unit tests |
-| `2ddaa87` | Tetragon gRPC streaming adapter |
-
----
-
-## File Map
-
+# Linux full build (compiles eBPF + userspace)
+cargo build --release -p vectorguard
 ```
-vectorguard/
-├── build.rs                        # Proto + eBPF build script
-├── config.toml                     # Runtime configuration
-├── proto/
-│   └── tetragon.proto              # Tetragon API v1 schema
-├── src/
-│   ├── main.rs                     # Entry point + pipeline wiring
-│   ├── config.rs                   # Config structs + loader
-│   ├── event/mod.rs                # NormalizedEvent type definitions
-│   ├── scope.rs                    # Process scope filter
-│   ├── hotreload.rs                # config.toml file watcher
-│   ├── collector.rs                # eBPF ring buffer collector (Linux)
-│   ├── adapter/
-│   │   ├── mod.rs                  # Adapter trait + factory + run loop
-│   │   ├── tetragon.rs             # Tetragon gRPC streaming adapter
-│   │   ├── falco.rs                # Falco JSON log tail adapter
-│   │   └── auditd.rs               # Auditd SYSCALL log adapter
-│   ├── fast_path/
-│   │   ├── mod.rs                  # FastPath engine
-│   │   └── rules.rs                # Rule types, loader, matcher + tests
-│   ├── slow_path/
-│   │   ├── mod.rs                  # SlowPath engine + anomaly detection
-│   │   ├── embedder.rs             # Local / OpenAI embedder + tests
-│   │   └── vectordb.rs             # Qdrant REST API client
-│   └── tui/
-│       ├── mod.rs                  # Terminal init + event-driven run loop
-│       ├── app.rs                  # App state + push_event()
-│       ├── event.rs                # Non-blocking keyboard handler
-│       └── render.rs               # ratatui layout + widgets
-vectorguard-ebpf/
-└── src/main.rs                     # eBPF tracepoints (execve/openat/connect)
-vectorguard-common/
-└── src/lib.rs                      # RawEvent, EventKind, payloads (no_std)
-rules/
-└── default.toml                    # Default Fast Path rules
+
+### Run
+```bash
+# Requires root for eBPF program loading
+sudo ./target/release/vectorguard
+
+# With Qdrant for slow path
+docker run -p 6333:6333 qdrant/qdrant
+sudo ./target/release/vectorguard
 ```
 
 ---
 
-## Known Limitations / Future Work
+## 8. Git History
 
-| Item | Notes |
-|------|-------|
-| eBPF build requires Linux + nightly Rust | Expected — eBPF target constraint |
-| Tetragon adapter requires `protoc` on build host | `brew install protobuf` on macOS |
-| Scope filter not re-applied on hot reload | Requires pipeline restart |
-| Slow path not re-initialized on hot reload | Qdrant collection persists across restarts |
-| `exclude_namespaces` not implemented | K8s namespace filtering is a no-op |
-| OpenAI embedder uses 1536 dims vs local 64 dims | Qdrant collection must be recreated when switching backends |
+| Commit | Description |
+|---|---|
+| `42e44a8` | feat: B/C/D — context aggregation, hot reload sync, eBPF map update |
+| `2fc3d0b` | feat: kernel-level Enforcer with eBPF blocking maps and LSM hooks |
+| `d1dbefb` | docs: initial work report |
+| `2ddaa87` | feat: Tetragon gRPC streaming adapter |
+| `bea98da` | feat: build.rs, scope filtering, and unit tests |
+| `9f5f4e7` | chore: translate all Korean comments/strings to English |
+| `a65983c` | feat: full pipeline (Fast Path / Slow Path / Adapter / TUI) |
+
+---
+
+## 9. Test Coverage
+
+| Module | Tests |
+|---|---|
+| `fast_path/rules.rs` | 18 unit tests (rule matching, action precedence, builtin rules) |
+| `slow_path/embedder.rs` | 6 unit tests (dimensions, normalization, cosine similarity, determinism) |
+| `slow_path/context.rs` | 4 unit tests (first-event, dimension, pruning, unit-normalization) |
+| `scope.rs` | 3 unit tests (empty targets, exact match, glob match) |
+
+---
+
+## 10. Security Design Notes
+
+- **Kernel enforcement is proactive (LSM) and reactive (SIGKILL).** LSM hooks fire *before* the syscall completes; tracepoints fire concurrently and kill via signal. Combined, they cover cases where the kernel does not support BPF LSM.
+- **Fail-open for LSM.** If `try_lsm_exec` or `try_lsm_file_open` returns an error, the program returns 0 (allow) rather than blocking legitimate system activity.
+- **Zero userspace round-trip for known threats.** Once a comm/port/UID is in the eBPF blocking map, the kernel enforces it without waking userspace.
+- **Context-aware anomaly detection.** The Slow Path does not judge events in isolation — it considers the PID's recent behavioral baseline, reducing noise from scripted processes.
+- **Hot reload with immediate kernel effect.** Updating `rules/default.toml` and saving triggers a full pipeline rebuild + eBPF map repopulation within ≤500 ms.

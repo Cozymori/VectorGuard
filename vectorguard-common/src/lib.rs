@@ -21,6 +21,9 @@ pub struct RawEvent {
     pub comm:      [u8; 64],
     /// Additional data per event type
     pub payload:   EventPayload,
+    /// Set to 1 by eBPF when the kernel already took blocking action (SIGKILL / EPERM)
+    pub blocked:   u8,
+    pub _pad:      [u8; 7],
 }
 
 #[repr(u32)]

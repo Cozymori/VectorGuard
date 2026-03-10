@@ -6,4 +6,4 @@ build-std = ["core"]
 
 [target.bpfel-unknown-none]
 linker = "bpf-linker"
-rustflags = ["-C", "link-arg=--btf"]
+rustflags = []

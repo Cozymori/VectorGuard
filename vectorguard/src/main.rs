@@ -109,7 +109,7 @@ async fn main() -> Result<()> {
                             tracing::error!("eBPF collector error: {}", e);
                         }
                     }
-                    Err(e) => tracing::error!("eBPF load failed: {}", e),
+                    Err(e) => tracing::error!("eBPF load failed: {:#}", e),
                 }
             });
             info!("Native eBPF collector started");
@@ -167,7 +167,7 @@ async fn main() -> Result<()> {
 
 /// Event processing pipeline with live hot-reload support.
 async fn run_pipeline(
-    mut raw_rx:       mpsc::Receiver<NormalizedEvent>,
+    raw_rx:           mpsc::Receiver<NormalizedEvent>,
     proc_tx:          mpsc::Sender<NormalizedEvent>,
     mut scope_filter: scope::ScopeFilter,
     mut fast_path:    fast_path::FastPath,
@@ -178,20 +178,38 @@ async fn run_pipeline(
     #[cfg(not(target_os = "linux"))]
     _enf_opt: Option<()>,
 ) {
+    // Wrap in Option so we can park (pending) the arm when the source closes,
+    // keeping the pipeline alive for hot-reload events even if eBPF failed.
+    let mut raw_rx_opt: Option<mpsc::Receiver<NormalizedEvent>> = Some(raw_rx);
+
     loop {
         tokio::select! {
-            ev = raw_rx.recv() => {
-                let Some(mut ev) = ev else { break };
-
-                if !scope_filter.allows(&ev) {
-                    continue;
+            ev = async {
+                match raw_rx_opt.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
                 }
+            } => {
+                match ev {
+                    None => {
+                        // Source exhausted (eBPF failed / adapter stopped).
+                        // Park this arm and keep the pipeline alive for reload events.
+                        tracing::warn!("Event source closed — running in degraded mode (no events)");
+                        raw_rx_opt = None;
+                        continue;
+                    }
+                    Some(mut ev) => {
+                        if !scope_filter.allows(&ev) {
+                            continue;
+                        }
 
-                fast_path.evaluate(&mut ev);
-                slow_path.analyze(&mut ev).await;
+                        fast_path.evaluate(&mut ev);
+                        slow_path.analyze(&mut ev).await;
 
-                if proc_tx.send(ev).await.is_err() {
-                    break;
+                        if proc_tx.send(ev).await.is_err() {
+                            break;
+                        }
+                    }
                 }
             }
 

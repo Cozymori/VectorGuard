@@ -1,0 +1,6 @@
+# Workspace-level cargo config.
+# Note: bpfel-unknown-none settings only apply when building eBPF programs.
+
+[target.bpfel-unknown-none]
+linker = "bpf-linker"
+rustflags = ["-C", "link-arg=--btf"]

@@ -57,7 +57,12 @@ async fn run_headless(event_rx: &mut Option<mpsc::Receiver<NormalizedEvent>>) ->
                     action = ?ev.action,
                     "event"
                 ),
-                None => break,
+                None => {
+                    // Pipeline closed (e.g. eBPF failed); stay alive, keep
+                    // logging "no events" rather than exiting the daemon.
+                    tracing::warn!("Event pipeline closed — running in degraded mode");
+                    *event_rx = None;
+                }
             },
             None => {
                 // No event source — sleep until cancelled

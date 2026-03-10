@@ -33,6 +33,7 @@ pub async fn run(app: App, mut event_rx: Option<mpsc::Receiver<NormalizedEvent>>
 
     let backend = CrosstermBackend::new(stdout());
     let mut terminal = Terminal::new(backend)?;
+    terminal.clear()?;
 
     let result = run_loop(&mut terminal, app, &mut event_rx).await;
 

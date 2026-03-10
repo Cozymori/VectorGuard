@@ -3,16 +3,19 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Tabs, Wrap},
+    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Tabs, Wrap},
 };
 
-use super::app::{App, Tab};
+use super::app::{App, InputMode, Tab};
 use crate::event::Severity;
 
 pub fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
 
-    // Overall layout: header (tabs) / body / footer
+    // 전체 배경을 검정으로 채워 터미널 잔상 제거
+    let bg = Block::default().style(Style::default().bg(Color::Black));
+    f.render_widget(bg, area);
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -25,12 +28,21 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_tabs(f, app, chunks[0]);
 
     match app.active_tab {
-        Tab::Dashboard => draw_dashboard(f, app, chunks[1]),
-        Tab::Events    => draw_events(f, app, chunks[1]),
-        Tab::Config    => draw_config(f, app, chunks[1]),
+        Tab::Dashboard   => draw_dashboard(f, app, chunks[1]),
+        Tab::Events      => draw_events(f, app, chunks[1]),
+        Tab::Config      => draw_config(f, app, chunks[1]),
+        Tab::ProcessTree => draw_process_tree(f, app, chunks[1]),
     }
 
-    draw_footer(f, chunks[2]);
+    draw_footer(f, app, chunks[2]);
+
+    // 팝업은 맨 마지막에 렌더링 (최상단 레이어)
+    if let Some(idx) = app.selected_event {
+        let events = app.filtered_events();
+        if let Some(ev) = events.get(idx) {
+            draw_event_detail(f, ev, area);
+        }
+    }
 }
 
 // ── Tab Bar ───────────────────────────────────────────────────
@@ -65,7 +77,6 @@ fn draw_dashboard(f: &mut Frame, app: &App, area: Rect) {
         .constraints([Constraint::Length(5), Constraint::Min(0)])
         .split(area);
 
-    // 4 stat cards
     let stat_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -77,12 +88,11 @@ fn draw_dashboard(f: &mut Frame, app: &App, area: Rect) {
         .split(chunks[0]);
 
     let s = &app.stats;
-    draw_stat_card(f, "Total Events",  &s.total_events.to_string(),  Color::White,  stat_chunks[0]);
-    draw_stat_card(f, "Blocked",       &s.blocked.to_string(),        Color::Red,    stat_chunks[1]);
-    draw_stat_card(f, "Alerts",        &s.alerts.to_string(),         Color::Yellow, stat_chunks[2]);
-    draw_stat_card(f, "High Severity", &s.high_severity.to_string(),  Color::Magenta,stat_chunks[3]);
+    draw_stat_card(f, "Total Events",  &s.total_events.to_string(),  Color::White,   stat_chunks[0]);
+    draw_stat_card(f, "Blocked",       &s.blocked.to_string(),        Color::Red,     stat_chunks[1]);
+    draw_stat_card(f, "Alerts",        &s.alerts.to_string(),         Color::Yellow,  stat_chunks[2]);
+    draw_stat_card(f, "High Severity", &s.high_severity.to_string(),  Color::Magenta, stat_chunks[3]);
 
-    // Recent events mini table
     draw_recent_events(f, app, chunks[1]);
 }
 
@@ -94,7 +104,8 @@ fn draw_stat_card(f: &mut Frame, title: &str, value: &str, color: Color, area: R
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         )),
     ])
-    .block(Block::default().borders(Borders::ALL).title(format!(" {} ", title)));
+    .block(Block::default().borders(Borders::ALL).title(format!(" {} ", title))
+        .style(Style::default().bg(Color::Black)));
     f.render_widget(text, area);
 }
 
@@ -105,13 +116,14 @@ fn draw_recent_events(f: &mut Frame, app: &App, area: Rect) {
 
     let recent: Vec<Row> = app.events.iter().rev().take(20).map(|e| {
         let sev_color = severity_color(&e.severity);
+        let action_color = action_color(&e.action);
         Row::new(vec![
             Cell::from(e.timestamp.as_str()),
             Cell::from(e.pid.to_string()),
             Cell::from(e.process.as_str()),
             Cell::from(e.kind.as_str()),
             Cell::from(Span::styled(format!("{:?}", e.severity), Style::default().fg(sev_color))),
-            Cell::from(e.action.as_str()),
+            Cell::from(Span::styled(e.action.as_str(), Style::default().fg(action_color))),
         ])
         .height(1)
     }).collect();
@@ -125,7 +137,8 @@ fn draw_recent_events(f: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(8),
     ])
     .header(header)
-    .block(Block::default().borders(Borders::ALL).title(" Recent Events "))
+    .block(Block::default().borders(Borders::ALL).title(" Recent Events ")
+        .style(Style::default().bg(Color::Black)))
     .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
     f.render_widget(table, area);
@@ -133,25 +146,48 @@ fn draw_recent_events(f: &mut Frame, app: &App, area: Rect) {
 
 // ── Events Tab ────────────────────────────────────────────────
 fn draw_events(f: &mut Frame, app: &App, area: Rect) {
+    // 필터 검색창 영역 분리
+    let (table_area, search_area_opt) = if app.input_mode == InputMode::Filtering
+        || !app.filter_query.is_empty()
+    {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(3)])
+            .split(area);
+        (chunks[0], Some(chunks[1]))
+    } else {
+        (area, None)
+    };
+
     let header = Row::new(vec!["Time", "PID", "Process", "Kind", "Severity", "Action"])
         .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
         .height(1);
 
-    let rows: Vec<Row> = app.events.iter().map(|e| {
+    let events = app.filtered_events();
+    let rows: Vec<Row> = events.iter().map(|e| {
         let sev_color = severity_color(&e.severity);
+        let action_color = action_color(&e.action);
         Row::new(vec![
             Cell::from(e.timestamp.as_str()),
             Cell::from(e.pid.to_string()),
             Cell::from(e.process.as_str()),
             Cell::from(e.kind.as_str()),
             Cell::from(Span::styled(format!("{:?}", e.severity), Style::default().fg(sev_color))),
-            Cell::from(e.action.as_str()),
+            Cell::from(Span::styled(e.action.as_str(), Style::default().fg(action_color))),
         ])
         .height(1)
     }).collect();
 
+    let title = if app.filter_query.is_empty() {
+        " All Events (↑↓ scroll  Enter detail  / filter) ".to_string()
+    } else {
+        format!(" Filtered: \"{}\" ({} results) ", app.filter_query, events.len())
+    };
+
     let mut state = TableState::default();
-    state.select(Some(app.event_scroll));
+    if !events.is_empty() {
+        state.select(Some(app.event_scroll));
+    }
 
     let table = Table::new(rows, [
         Constraint::Length(12),
@@ -162,10 +198,32 @@ fn draw_events(f: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(8),
     ])
     .header(header)
-    .block(Block::default().borders(Borders::ALL).title(" All Events (↑↓ to scroll) "))
-    .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    .block(Block::default().borders(Borders::ALL).title(title)
+        .style(Style::default().bg(Color::Black)))
+    .row_highlight_style(Style::default()
+        .bg(Color::DarkGray)
+        .add_modifier(Modifier::BOLD));
 
-    f.render_stateful_widget(table, area, &mut state);
+    f.render_stateful_widget(table, table_area, &mut state);
+
+    // 검색창 렌더링
+    if let Some(sa) = search_area_opt {
+        let search_text = if app.input_mode == InputMode::Filtering {
+            format!("{}_", app.filter_input)
+        } else {
+            format!("{}  (Esc to clear)", app.filter_query)
+        };
+        let border_color = if app.input_mode == InputMode::Filtering {
+            Color::Cyan
+        } else {
+            Color::DarkGray
+        };
+        let p = Paragraph::new(search_text)
+            .block(Block::default().borders(Borders::ALL).title(" Filter (/) ")
+                .border_style(Style::default().fg(border_color))
+                .style(Style::default().bg(Color::Black)));
+        f.render_widget(p, sa);
+    }
 }
 
 // ── Config Tab ────────────────────────────────────────────────
@@ -174,22 +232,180 @@ fn draw_config(f: &mut Frame, app: &App, area: Rect) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" config.toml (read-only — edit with: vi config.toml) "),
+                .title(" config.toml (read-only) ")
+                .style(Style::default().bg(Color::Black)),
         )
         .wrap(Wrap { trim: false });
     f.render_widget(p, area);
 }
 
+// ── Process Tree Tab ──────────────────────────────────────────
+fn draw_process_tree(f: &mut Frame, app: &App, area: Rect) {
+    let header = Row::new(vec!["PID", "PPID", "Process", "UID", "Events", "Last Action", "Last Seen"])
+        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .height(1);
+
+    let rows_data = app.process_tree_rows();
+    let rows: Vec<Row> = rows_data.iter().map(|(depth, node)| {
+        let indent = "  ".repeat(*depth);
+        let prefix = if *depth > 0 { "└─ " } else { "" };
+        let name = format!("{}{}{}", indent, prefix, node.name);
+
+        let action_color = action_color(&node.last_action);
+
+        Row::new(vec![
+            Cell::from(node.pid.to_string()),
+            Cell::from(node.ppid.to_string()),
+            Cell::from(name),
+            Cell::from(node.uid.to_string()),
+            Cell::from(node.event_count.to_string()),
+            Cell::from(Span::styled(node.last_action.as_str(), Style::default().fg(action_color))),
+            Cell::from(node.last_seen.as_str()),
+        ])
+        .height(1)
+    }).collect();
+
+    let mut state = TableState::default();
+    if !rows_data.is_empty() {
+        state.select(Some(app.proc_scroll));
+    }
+
+    let title = format!(" Process Tree ({} processes) ", app.process_map.len());
+
+    let table = Table::new(rows, [
+        Constraint::Length(8),
+        Constraint::Length(8),
+        Constraint::Min(28),
+        Constraint::Length(6),
+        Constraint::Length(8),
+        Constraint::Length(12),
+        Constraint::Length(14),
+    ])
+    .header(header)
+    .block(Block::default().borders(Borders::ALL).title(title)
+        .style(Style::default().bg(Color::Black)))
+    .row_highlight_style(Style::default()
+        .bg(Color::DarkGray)
+        .add_modifier(Modifier::BOLD));
+
+    f.render_stateful_widget(table, area, &mut state);
+}
+
+// ── Event Detail Popup ────────────────────────────────────────
+fn draw_event_detail(f: &mut Frame, ev: &super::app::EventRow, area: Rect) {
+    let popup_area = centered_rect(65, 55, area);
+    f.render_widget(Clear, popup_area);
+
+    let sev_color = severity_color(&ev.severity);
+    let act_color = action_color(&ev.action);
+
+    let pid_str  = ev.pid.to_string();
+    let ppid_str = ev.ppid.to_string();
+    let uid_str  = ev.uid.to_string();
+    let sev_str  = format!("{:?}", ev.severity);
+
+    let text = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Timestamp  : ", Style::default().fg(Color::DarkGray)),
+            Span::raw(ev.timestamp.as_str()),
+        ]),
+        Line::from(vec![
+            Span::styled("  PID        : ", Style::default().fg(Color::DarkGray)),
+            Span::styled(pid_str.as_str(), Style::default().fg(Color::Cyan)),
+        ]),
+        Line::from(vec![
+            Span::styled("  PPID       : ", Style::default().fg(Color::DarkGray)),
+            Span::raw(ppid_str.as_str()),
+        ]),
+        Line::from(vec![
+            Span::styled("  UID        : ", Style::default().fg(Color::DarkGray)),
+            Span::raw(uid_str.as_str()),
+        ]),
+        Line::from(vec![
+            Span::styled("  Process    : ", Style::default().fg(Color::DarkGray)),
+            Span::styled(ev.process.as_str(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Event      : ", Style::default().fg(Color::DarkGray)),
+            Span::raw(ev.full_kind.as_str()),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Severity   : ", Style::default().fg(Color::DarkGray)),
+            Span::styled(sev_str.as_str(), Style::default().fg(sev_color).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(vec![
+            Span::styled("  Action     : ", Style::default().fg(Color::DarkGray)),
+            Span::styled(ev.action.as_str(), Style::default().fg(act_color).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Press Esc or Enter to close",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+
+    let p = Paragraph::new(text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Event Detail ")
+                .border_style(Style::default().fg(Color::Cyan))
+                .style(Style::default().bg(Color::Black)),
+        );
+    f.render_widget(p, popup_area);
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
+}
+
 // ── Footer ────────────────────────────────────────────────────
-fn draw_footer(f: &mut Frame, area: Rect) {
-    let text = Line::from(vec![
-        Span::styled(" q", Style::default().fg(Color::Yellow)),
-        Span::raw(":quit  "),
-        Span::styled("Tab/1-3", Style::default().fg(Color::Yellow)),
-        Span::raw(":switch  "),
-        Span::styled("↑↓/jk", Style::default().fg(Color::Yellow)),
-        Span::raw(":scroll"),
-    ]);
+fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
+    let text = if app.is_detail_open() {
+        Line::from(vec![
+            Span::styled(" Esc/Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(":close popup"),
+        ])
+    } else if app.input_mode == InputMode::Filtering {
+        Line::from(vec![
+            Span::styled(" Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(":apply  "),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::raw(":cancel"),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(" q", Style::default().fg(Color::Yellow)),
+            Span::raw(":quit  "),
+            Span::styled("Tab/1-4", Style::default().fg(Color::Yellow)),
+            Span::raw(":switch  "),
+            Span::styled("↑↓/jk", Style::default().fg(Color::Yellow)),
+            Span::raw(":scroll  "),
+            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(":detail  "),
+            Span::styled("/", Style::default().fg(Color::Yellow)),
+            Span::raw(":filter"),
+        ])
+    };
     f.render_widget(Paragraph::new(text), area);
 }
 
@@ -201,5 +417,13 @@ fn severity_color(s: &Severity) -> Color {
         Severity::Medium   => Color::Yellow,
         Severity::High     => Color::Red,
         Severity::Critical => Color::Magenta,
+    }
+}
+
+fn action_color(action: &str) -> Color {
+    match action {
+        a if a.contains("Block") || a.contains("Kill") => Color::Red,
+        a if a.contains("Alert")                       => Color::Yellow,
+        _                                              => Color::Green,
     }
 }

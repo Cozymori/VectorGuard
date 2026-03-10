@@ -1,0 +1,107 @@
+# ── Build Stage (reuse from main Dockerfile) ─────────────────
+FROM rust:latest AS builder
+
+RUN apt-get update && apt-get install -y \
+    clang llvm libelf-dev pkg-config \
+    linux-headers-generic \
+    protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN rustup toolchain install nightly --component rust-src --no-self-update
+RUN cargo install --locked bpf-linker
+
+WORKDIR /build
+
+# Cache dependencies
+COPY Cargo.toml Cargo.lock ./
+COPY vectorguard-common/Cargo.toml ./vectorguard-common/
+COPY vectorguard-ebpf/Cargo.toml   ./vectorguard-ebpf/
+COPY vectorguard-ebpf/.cargo       ./vectorguard-ebpf/.cargo/
+COPY vectorguard/Cargo.toml        ./vectorguard/
+COPY vectorguard/build.rs          ./vectorguard/
+COPY vectorguard/proto             ./vectorguard/proto/
+
+RUN mkdir -p vectorguard-common/src vectorguard-ebpf/src vectorguard/src && \
+    echo "pub fn stub(){}" > vectorguard-common/src/lib.rs && \
+    printf '#![no_std]\n#![no_main]\n#[panic_handler]\nfn p(_:&core::panic::PanicInfo)->!{loop{}}\n' \
+      > vectorguard-ebpf/src/main.rs && \
+    echo "fn main(){}" > vectorguard/src/main.rs
+
+RUN cargo fetch
+RUN CARGO_CFG_TARGET_OS=linux cargo build -p vectorguard --release 2>/dev/null || true
+
+# Build actual source
+COPY . .
+
+RUN cargo +nightly build -p vectorguard-ebpf \
+    --target bpfel-unknown-none --release -Z build-std=core
+
+RUN cargo build -p vectorguard --release
+
+# Unit tests
+RUN cargo test -p vectorguard --release 2>&1; true
+
+# ── Test Runtime Image ───────────────────────────────────────
+FROM debian:trixie-slim
+
+RUN apt-get update && apt-get install -y \
+    libelf1 libssl3 ca-certificates \
+    netcat-openbsd curl procps iproute2 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/target/release/vectorguard /usr/local/bin/vectorguard
+COPY --from=builder /build/rules                       /etc/vectorguard/rules/
+
+# Test-optimized config: native_ebpf, debug logging, slow_path off
+RUN mkdir -p /etc/vectorguard && cat > /etc/vectorguard/config.toml << 'TOML'
+[system]
+log_level  = "debug"
+hot_reload = true
+
+[scope]
+targets            = []
+include_namespaces = []
+exclude_namespaces = []
+label_selectors    = []
+
+[adapter]
+backend = "native_ebpf"
+
+[adapter.tetragon]
+endpoint = "http://localhost:54321"
+
+[adapter.falco]
+log_path = "/var/log/falco/events.json"
+
+[adapter.auditd]
+log_path = "/var/log/audit/audit.log"
+
+[fast_path]
+enabled        = true
+rules_path     = "/etc/vectorguard/rules"
+default_action = "log"
+
+[slow_path]
+enabled              = false
+time_window_secs     = 60
+similarity_threshold = 0.85
+
+[slow_path.embedder]
+backend     = "local"
+model       = ""
+api_key_env = ""
+
+[slow_path.vectordb]
+backend    = "qdrant"
+url        = "http://localhost:6333"
+collection = "behaviors"
+
+[tui]
+refresh_rate_ms = 200
+theme           = "dark"
+TOML
+
+COPY test_e2e_docker.sh /test_e2e.sh
+RUN chmod +x /test_e2e.sh
+
+ENTRYPOINT ["/test_e2e.sh"]

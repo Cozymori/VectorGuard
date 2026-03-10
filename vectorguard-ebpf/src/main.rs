@@ -8,46 +8,38 @@ use aya_ebpf::{
     helpers::{
         bpf_get_current_pid_tgid, bpf_get_current_uid_gid,
         bpf_get_current_comm, bpf_ktime_get_ns, bpf_send_signal,
+        bpf_probe_read_user_str_bytes, bpf_probe_read_user_buf,
     },
 };
-use vectorguard_common::{EventKind, ExecPayload, RawEvent};
+use vectorguard_common::{EventKind, RawEvent};
 
-// ── Ring Buffer: eBPF → userspace ────────────────────────────
 #[map]
-static EVENTS: RingBuf = RingBuf::with_byte_size(1024 * 1024, 0); // 1MB
+static EVENTS: RingBuf = RingBuf::with_byte_size(1024 * 1024, 0);
 
-// ── Blocking Maps: written by userspace Enforcer ──────────────
-/// Blocked comm names — key: first 16 bytes of comm (null-padded)
 #[map]
 static BLOCKED_COMMS: HashMap<[u8; 16], u8> = HashMap::with_max_entries(256, 0);
 
-/// Blocked destination ports
 #[map]
 static BLOCKED_PORTS: HashMap<u16, u8> = HashMap::with_max_entries(256, 0);
 
-/// Blocked UIDs
 #[map]
 static BLOCKED_UIDS: HashMap<u32, u8> = HashMap::with_max_entries(256, 0);
 
-// ── Helper: check if current comm is blocked ──────────────────
 #[inline(always)]
 fn comm_is_blocked(comm: &[u8; 16]) -> bool {
     unsafe { BLOCKED_COMMS.get(comm).is_some() }
 }
 
-// ── Helper: check if current uid is blocked ───────────────────
 #[inline(always)]
 fn uid_is_blocked(uid: u32) -> bool {
     unsafe { BLOCKED_UIDS.get(&uid).is_some() }
 }
 
-// ── Helper: get current comm as [u8; 16] ─────────────────────
 #[inline(always)]
 fn get_comm() -> [u8; 16] {
     bpf_get_current_comm().unwrap_or([0u8; 16])
 }
 
-// ── Helper: fill RawEvent comm field from [u8;16] ────────────
 #[inline(always)]
 unsafe fn fill_comm(event: *mut RawEvent, comm16: &[u8; 16]) {
     unsafe {
@@ -59,7 +51,7 @@ unsafe fn fill_comm(event: *mut RawEvent, comm16: &[u8; 16]) {
     }
 }
 
-// ── execve tracepoint ────────────────────────────────────────
+// ── Exec handler ──
 #[tracepoint]
 pub fn handle_exec(ctx: TracePointContext) -> u32 {
     match try_handle_exec(&ctx) {
@@ -78,6 +70,7 @@ fn try_handle_exec(ctx: &TracePointContext) -> Result<u32, i64> {
     let gid = (uid_gid >> 32) as u32;
 
     let comm16 = get_comm();
+    let should_block = comm_is_blocked(&comm16) || uid_is_blocked(uid);
 
     let mut entry = match EVENTS.reserve::<RawEvent>(0) {
         Some(e) => e,
@@ -85,7 +78,6 @@ fn try_handle_exec(ctx: &TracePointContext) -> Result<u32, i64> {
     };
 
     let event = entry.as_mut_ptr();
-    let mut blocked: u8 = 0;
 
     unsafe {
         (*event).kind      = EventKind::Exec;
@@ -94,35 +86,37 @@ fn try_handle_exec(ctx: &TracePointContext) -> Result<u32, i64> {
         (*event).ppid      = ppid;
         (*event).uid       = uid;
         (*event).gid       = gid;
+        (*event).blocked   = if should_block { 1 } else { 0 };
 
         fill_comm(event, &comm16);
 
-        if comm_is_blocked(&comm16) || uid_is_blocked(uid) {
-            bpf_send_signal(9); // SIGKILL
-            blocked = 1;
+        // Read exec filename from tracepoint args
+        // sys_enter_execve format: offset 16 = filename pointer
+        if let Ok(filename_ptr) = ctx.read_at::<u64>(16) {
+            if filename_ptr != 0 {
+                let _ = bpf_probe_read_user_str_bytes(
+                    filename_ptr as *const u8,
+                    &mut (*event).payload.exec.filename,
+                );
+            }
         }
-
-        // syscalls/sys_enter_execve: args[0] = filename ptr (offset 16)
-        let filename_ptr: *const u8 = ctx.read_at(16)?;
-        let payload = &mut (*event).payload.exec as *mut ExecPayload;
-        aya_ebpf::helpers::bpf_probe_read_user_str_bytes(
-            filename_ptr,
-            &mut (*payload).filename,
-        ).map_err(|e| e)?;
-
-        (*event).blocked = blocked;
     }
 
     entry.submit(0);
+
+    if should_block {
+        unsafe { bpf_send_signal(9) };
+    }
+
     Ok(0)
 }
 
-// ── openat tracepoint ───────────────────────────────────────
+// ── File open handler ──
 #[tracepoint]
 pub fn handle_file_open(ctx: TracePointContext) -> u32 {
     match try_handle_file_open(&ctx) {
         Ok(ret) => ret,
-        Err(_)  => 1,
+        Err(_)  => 0,
     }
 }
 
@@ -143,7 +137,6 @@ fn try_handle_file_open(ctx: &TracePointContext) -> Result<u32, i64> {
     };
 
     let event = entry.as_mut_ptr();
-    let mut blocked: u8 = 0;
 
     unsafe {
         (*event).kind      = EventKind::FileOpen;
@@ -152,38 +145,34 @@ fn try_handle_file_open(ctx: &TracePointContext) -> Result<u32, i64> {
         (*event).ppid      = ppid;
         (*event).uid       = uid;
         (*event).gid       = gid;
+        (*event).blocked   = 0;
 
         fill_comm(event, &comm16);
 
-        if comm_is_blocked(&comm16) || uid_is_blocked(uid) {
-            bpf_send_signal(9); // SIGKILL
-            blocked = 1;
+        // sys_enter_openat format: offset 24 = filename pointer, offset 32 = flags
+        if let Ok(filename_ptr) = ctx.read_at::<u64>(24) {
+            if filename_ptr != 0 {
+                let _ = bpf_probe_read_user_str_bytes(
+                    filename_ptr as *const u8,
+                    &mut (*event).payload.file.path,
+                );
+            }
         }
-
-        // syscalls/sys_enter_openat: args[1] = filename ptr (offset 24), args[2] = flags (offset 32)
-        let filename_ptr: *const u8 = ctx.read_at(24)?;
-        let flags: u32              = ctx.read_at(32)?;
-
-        let payload = &mut (*event).payload.file;
-        aya_ebpf::helpers::bpf_probe_read_user_str_bytes(
-            filename_ptr,
-            &mut (*payload).path,
-        ).map_err(|e| e)?;
-        (*payload).flags = flags;
-
-        (*event).blocked = blocked;
+        if let Ok(flags) = ctx.read_at::<u64>(32) {
+            (*event).payload.file.flags = flags as u32;
+        }
     }
 
     entry.submit(0);
     Ok(0)
 }
 
-// ── connect tracepoint ──────────────────────────────────────
+// ── Net connect handler ──
 #[tracepoint]
 pub fn handle_net_connect(ctx: TracePointContext) -> u32 {
     match try_handle_net_connect(&ctx) {
         Ok(ret) => ret,
-        Err(_)  => 1,
+        Err(_)  => 0,
     }
 }
 
@@ -198,13 +187,37 @@ fn try_handle_net_connect(ctx: &TracePointContext) -> Result<u32, i64> {
 
     let comm16 = get_comm();
 
+    // sys_enter_connect: offset 24 = sockaddr pointer, offset 32 = addrlen
+    let addr_ptr = unsafe { ctx.read_at::<u64>(24).unwrap_or(0) };
+    if addr_ptr == 0 {
+        return Ok(0);
+    }
+
+    // Read sockaddr_in from userspace (fixed-length, not string)
+    let mut sa_buf = [0u8; 16];
+    unsafe {
+        if bpf_probe_read_user_buf(addr_ptr as *const u8, &mut sa_buf).is_err() {
+            return Ok(0);
+        }
+    }
+
+    let family = u16::from_ne_bytes([sa_buf[0], sa_buf[1]]);
+    // AF_INET = 2
+    if family != 2 {
+        return Ok(0);
+    }
+
+    let dst_port = u16::from_be_bytes([sa_buf[2], sa_buf[3]]);
+    let dst_ip = u32::from_ne_bytes([sa_buf[4], sa_buf[5], sa_buf[6], sa_buf[7]]);
+
+    let should_block = unsafe { BLOCKED_PORTS.get(&dst_port).is_some() };
+
     let mut entry = match EVENTS.reserve::<RawEvent>(0) {
         Some(e) => e,
         None    => return Ok(0),
     };
 
     let event = entry.as_mut_ptr();
-    let mut blocked: u8 = 0;
 
     unsafe {
         (*event).kind      = EventKind::NetConnect;
@@ -213,91 +226,32 @@ fn try_handle_net_connect(ctx: &TracePointContext) -> Result<u32, i64> {
         (*event).ppid      = ppid;
         (*event).uid       = uid;
         (*event).gid       = gid;
+        (*event).blocked   = if should_block { 1 } else { 0 };
 
         fill_comm(event, &comm16);
 
-        // syscalls/sys_enter_connect: args[1] = sockaddr ptr (offset 24)
-        let sockaddr_ptr: *const u8 = ctx.read_at(24)?;
-
-        // sockaddr_in layout: [u16 family][u16 port big-endian][u32 addr]
-        let port: u16 = aya_ebpf::helpers::bpf_probe_read_kernel(
-            (sockaddr_ptr as usize + 2) as *const u16
-        ).map_err(|e| e)?;
-        let addr: u32 = aya_ebpf::helpers::bpf_probe_read_kernel(
-            (sockaddr_ptr as usize + 4) as *const u32
-        ).map_err(|e| e)?;
-
-        let dst_port = u16::from_be(port);
-
-        if comm_is_blocked(&comm16) || uid_is_blocked(uid)
-            || BLOCKED_PORTS.get(&dst_port).is_some()
-        {
-            bpf_send_signal(9); // SIGKILL
-            blocked = 1;
-        }
-
-        let payload = &mut (*event).payload.net;
-        payload.dst_ip   = addr;
-        payload.dst_port = dst_port;
-        payload.proto    = 6; // TCP
-
-        (*event).blocked = blocked;
+        (*event).payload.net.dst_ip   = dst_ip;
+        (*event).payload.net.dst_port = dst_port;
+        (*event).payload.net.proto    = 6; // TCP
     }
 
     entry.submit(0);
+
+    if should_block {
+        unsafe { bpf_send_signal(9) };
+    }
+
     Ok(0)
 }
 
-// ── LSM hook: bprm_check_security (exec) ────────────────────
-// Returns -EPERM to proactively block exec before the process starts.
 #[lsm(hook = "bprm_check_security")]
-pub fn lsm_exec(ctx: LsmContext) -> i32 {
-    match try_lsm_exec(&ctx) {
-        Ok(ret) => ret,
-        Err(_)  => 0, // fail-open on error
-    }
+pub fn lsm_exec(_ctx: LsmContext) -> i32 {
+    0
 }
 
-fn try_lsm_exec(_ctx: &LsmContext) -> Result<i32, i64> {
-    let uid_gid = bpf_get_current_uid_gid();
-    let uid = (uid_gid & 0xFFFF_FFFF) as u32;
-
-    if uid_is_blocked(uid) {
-        return Ok(-1); // -EPERM
-    }
-
-    let comm16 = get_comm();
-    if comm_is_blocked(&comm16) {
-        return Ok(-1); // -EPERM
-    }
-
-    Ok(0)
-}
-
-// ── LSM hook: file_open ──────────────────────────────────────
-// Returns -EPERM to proactively block sensitive file opens.
 #[lsm(hook = "file_open")]
-pub fn lsm_file_open(ctx: LsmContext) -> i32 {
-    match try_lsm_file_open(&ctx) {
-        Ok(ret) => ret,
-        Err(_)  => 0, // fail-open on error
-    }
-}
-
-fn try_lsm_file_open(_ctx: &LsmContext) -> Result<i32, i64> {
-    let uid_gid = bpf_get_current_uid_gid();
-    let uid = (uid_gid & 0xFFFF_FFFF) as u32;
-
-    if uid_is_blocked(uid) {
-        return Ok(-1); // -EPERM
-    }
-
-    let comm16 = get_comm();
-    if comm_is_blocked(&comm16) {
-        return Ok(-1); // -EPERM
-    }
-
-    Ok(0)
+pub fn lsm_file_open(_ctx: LsmContext) -> i32 {
+    0
 }
 
 #[panic_handler]

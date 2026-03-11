@@ -86,6 +86,7 @@ pub async fn run_collector(
     ebpf: &mut Ebpf,
     tx: tokio::sync::mpsc::Sender<NormalizedEvent>,
 ) -> Result<()> {
+    let own_pid = std::process::id();
     let ring_buf = ebpf.map_mut("EVENTS").context("EVENTS map not found")?;
     let ring_buf = RingBuf::try_from(ring_buf)?;
     let mut async_fd = AsyncFd::new(ring_buf)?;
@@ -98,6 +99,10 @@ pub async fn run_collector(
             let raw = parse_raw_event(&item);
             match raw {
                 Ok(event) => {
+                    // Skip events from our own process to reduce self-noise
+                    if event.process.pid == own_pid {
+                        continue;
+                    }
                     if tx.send(event).await.is_err() {
                         return Ok(()); // receiver closed
                     }

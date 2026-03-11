@@ -4,7 +4,7 @@ use rules::RuleSet;
 use tracing::debug;
 
 use crate::config::{DefaultAction, FastPathConfig};
-use crate::event::{Action, NormalizedEvent};
+use crate::event::{Action, NormalizedEvent, Severity};
 
 pub struct FastPath {
     ruleset:        RuleSet,
@@ -46,5 +46,8 @@ impl FastPath {
             "fast_path evaluation complete"
         );
         event.action = action;
+        if matches!(event.action, Action::Blocked | Action::Alerted) {
+            event.severity = Severity::High;
+        }
     }
 }

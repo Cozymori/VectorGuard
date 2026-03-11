@@ -229,7 +229,10 @@ fn is_sensitive_path(path: &str) -> bool {
         "/etc/passwd",
         "/etc/sudoers",
         "/root/",
-        "/proc/",
+        "/proc/kcore",
+        "/proc/kmem",
+        "/proc/sysrq-trigger",
+        "/proc/sys/kernel/",
         "/sys/kernel/",
     ];
     SENSITIVE.iter().any(|s| path.starts_with(s))

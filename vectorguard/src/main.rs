@@ -7,6 +7,7 @@ mod event;
 mod adapter;
 mod fast_path;
 mod hotreload;
+mod incident;
 mod scope;
 mod slow_path;
 mod tui;
@@ -130,21 +131,22 @@ async fn main() -> Result<()> {
     drop(raw_tx);
 
     // ── Pipeline Component Initialization ─────────────────────────
-    let scope_filter = scope::ScopeFilter::new(&cfg.scope);
-    let fast_path    = fast_path::FastPath::new(&cfg.fast_path);
-    let slow_path    = slow_path::SlowPath::new(&cfg.slow_path).await;
+    let scope_filter    = scope::ScopeFilter::new(&cfg.scope);
+    let fast_path       = fast_path::FastPath::new(&cfg.fast_path);
+    let slow_path       = slow_path::SlowPath::new(&cfg.slow_path).await;
+    let incident_logger = Arc::new(incident::IncidentLogger::new(None));
 
     // ── Event Processing Pipeline Task ────────────────────────────
     #[cfg(target_os = "linux")]
     tokio::spawn(run_pipeline(
         raw_rx, proc_tx, scope_filter, fast_path, slow_path,
-        reload_rx, Some(enf_shared),
+        incident_logger.clone(), reload_rx, Some(enf_shared),
     ));
 
     #[cfg(not(target_os = "linux"))]
     tokio::spawn(run_pipeline(
         raw_rx, proc_tx, scope_filter, fast_path, slow_path,
-        reload_rx, None,
+        incident_logger.clone(), reload_rx, None,
     ));
 
     // ── Signal ready (for K8s liveness probe) ────────────────────
@@ -172,6 +174,7 @@ async fn run_pipeline(
     mut scope_filter: scope::ScopeFilter,
     mut fast_path:    fast_path::FastPath,
     mut slow_path:    slow_path::SlowPath,
+    incident_logger:  Arc<incident::IncidentLogger>,
     mut reload_rx:    watch::Receiver<config::Config>,
     #[cfg(target_os = "linux")]
     enf_opt: Option<Arc<Mutex<Option<enforcer::Enforcer>>>>,
@@ -205,6 +208,7 @@ async fn run_pipeline(
 
                         fast_path.evaluate(&mut ev);
                         slow_path.analyze(&mut ev).await;
+                        incident_logger.record(&ev);
 
                         if proc_tx.send(ev).await.is_err() {
                             break;

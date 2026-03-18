@@ -60,7 +60,25 @@ impl VectorDb {
                 "vectors": { "size": vector_size, "distance": "Cosine" }
             });
             self.client.put(&url).json(&body).send().await?;
-            debug!("Qdrant collection created: {}", self.collection);
+            debug!("Qdrant collection created: {} (dim={})", self.collection, vector_size);
+        } else {
+            // Verify existing collection has matching dimensions
+            let info: serde_json::Value = check.json().await?;
+            if let Some(existing_size) = info["result"]["config"]["params"]["vectors"]["size"].as_u64() {
+                if existing_size as usize != vector_size {
+                    tracing::warn!(
+                        "Qdrant collection '{}' has dim={} but embedder expects dim={} — recreating",
+                        self.collection, existing_size, vector_size
+                    );
+                    // Delete and recreate with correct dimensions
+                    self.client.delete(&url).send().await?;
+                    let body = serde_json::json!({
+                        "vectors": { "size": vector_size, "distance": "Cosine" }
+                    });
+                    self.client.put(&url).json(&body).send().await?;
+                    debug!("Qdrant collection recreated: {} (dim={})", self.collection, vector_size);
+                }
+            }
         }
 
         Ok(())

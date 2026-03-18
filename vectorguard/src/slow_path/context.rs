@@ -42,6 +42,11 @@ impl ContextWindow {
         }
     }
 
+    /// Remove PIDs with empty history (all events expired from time window)
+    pub fn prune_stale_pids(&mut self) {
+        self.store.retain(|_, ring| !ring.is_empty());
+    }
+
     /// Return a recency-weighted average of past vectors for this PID, or `None`
     /// if the PID has no history yet (first event → no context available).
     pub fn context_vector(&self, pid: u32) -> Option<Vec<f32>> {

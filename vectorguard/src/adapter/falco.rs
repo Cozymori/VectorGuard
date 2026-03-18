@@ -139,6 +139,7 @@ fn parse_falco_json(line: &str) -> Result<NormalizedEvent> {
         event_type,
         severity,
         action:     Action::Allowed,
+        rule_name:  None,
         k8s:        None,
         raw:        v,
     })

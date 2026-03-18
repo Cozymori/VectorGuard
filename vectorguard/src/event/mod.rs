@@ -11,6 +11,7 @@ pub struct NormalizedEvent {
     pub event_type: EventType,
     pub severity:   Severity,
     pub action:     Action,
+    pub rule_name:  Option<String>,
     pub k8s:        Option<K8sMeta>,
     pub raw:        serde_json::Value,
 }

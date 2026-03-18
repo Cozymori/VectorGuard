@@ -38,14 +38,18 @@ impl FastPath {
             return;
         }
 
-        let action = self.ruleset.evaluate(event).unwrap_or(self.default_action.clone());
+        let (action, rule_name) = self.ruleset.evaluate(event)
+            .map(|(a, name)| (a, Some(name)))
+            .unwrap_or((self.default_action.clone(), None));
         debug!(
             pid = event.process.pid,
             binary = %event.process.binary,
             action = ?action,
+            rule = ?rule_name,
             "fast_path evaluation complete"
         );
         event.action = action;
+        event.rule_name = rule_name;
         if matches!(event.action, Action::Blocked | Action::Alerted) {
             event.severity = Severity::High;
         }

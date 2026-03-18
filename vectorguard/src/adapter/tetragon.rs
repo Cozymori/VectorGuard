@@ -126,6 +126,7 @@ fn convert_exec(e: pb::ProcessExec) -> Option<NormalizedEvent> {
         event_type: event::EventType::Exec,
         severity:   Severity::Info,
         action:     Action::Allowed,
+        rule_name:  None,
         k8s:        k8s_from(&proc),
         raw:        serde_json::Value::Null,
     })
@@ -143,6 +144,7 @@ fn convert_exit(e: pb::ProcessExit) -> Option<NormalizedEvent> {
         event_type: event::EventType::Signal { signum: 0, target_pid },
         severity:   Severity::Info,
         action:     Action::Allowed,
+        rule_name:  None,
         k8s:        k8s_from(&proc),
         raw:        serde_json::Value::Null,
     })
@@ -165,6 +167,7 @@ fn convert_kprobe(e: pb::ProcessKprobe) -> Option<NormalizedEvent> {
         event_type,
         severity,
         action:     Action::Allowed,
+        rule_name:  None,
         k8s:        k8s_from(&proc),
         raw:        serde_json::Value::Null,
     })
@@ -184,6 +187,7 @@ fn convert_tracepoint(e: pb::ProcessTracepoint) -> Option<NormalizedEvent> {
         },
         severity:   Severity::Medium,
         action:     Action::Allowed,
+        rule_name:  None,
         k8s:        k8s_from(&proc),
         raw:        serde_json::Value::Null,
     })

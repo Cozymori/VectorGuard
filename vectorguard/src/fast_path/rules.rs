@@ -83,12 +83,12 @@ impl RuleSet {
         RuleSet { rules: all_rules }
     }
 
-    /// Return the Action of the first matching rule, or None if no rule matches
-    pub fn evaluate(&self, event: &NormalizedEvent) -> Option<Action> {
+    /// Return the (Action, rule name) of the first matching rule, or None if no rule matches
+    pub fn evaluate(&self, event: &NormalizedEvent) -> Option<(Action, String)> {
         self.rules
             .iter()
             .find(|r| r.matches(event))
-            .map(|r| r.action.to_action())
+            .map(|r| (r.action.to_action(), r.name.clone()))
     }
 
     fn builtin_rules() -> Vec<Rule> {
@@ -228,6 +228,7 @@ mod tests {
             event_type,
             severity:   Severity::Info,
             action:     Action::Allowed,
+            rule_name:  None,
             k8s:        None,
             raw:        serde_json::Value::Null,
         }
@@ -259,7 +260,8 @@ mod tests {
     fn builtin_blocks_shadow_access() {
         let rs = RuleSet { rules: RuleSet::builtin_rules() };
         let ev = file_event("cat", "/etc/shadow");
-        assert_eq!(rs.evaluate(&ev), Some(Action::Blocked));
+        let result = rs.evaluate(&ev);
+        assert_eq!(result.as_ref().map(|(a, _)| a), Some(&Action::Blocked));
     }
 
     #[test]
@@ -272,27 +274,17 @@ mod tests {
     #[test]
     fn builtin_alerts_shell_from_nginx() {
         let rs = RuleSet { rules: RuleSet::builtin_rules() };
-        let mut ev = exec_event("/bin/bash");
-        ev.process.binary = "/bin/bash".to_string();
-        // match_process = ["nginx", ...], match_exec_path = ["/bin/sh", "/bin/bash", ...]
-        // The shell-exec rule requires process name to be nginx etc AND exec path to be a shell
-        // exec_event sets binary = "/bin/bash" as process too, so it would match exec_path
-        // but NOT match_process = ["nginx"]. So no match from shell rule.
-        // Let's create a proper event: process binary = "nginx", event = Exec of /bin/bash
-        let mut ev2 = base_event("nginx", 33, EventType::Exec);
-        ev2.process.binary = "/bin/bash".to_string(); // exec path IS the binary in our model
-        // Actually in our model, for Exec events match_exec_path checks process.binary
-        // So we need process.binary = "/bin/bash" AND match_process = ["nginx"]
-        // but those are the SAME field... let's just verify the logic works for path prefix
         let ev3 = file_event("any", "/etc/sudoers");
-        assert_eq!(rs.evaluate(&ev3), Some(Action::Blocked));
+        let result = rs.evaluate(&ev3);
+        assert_eq!(result.as_ref().map(|(a, _)| a), Some(&Action::Blocked));
     }
 
     #[test]
     fn builtin_alerts_suspicious_port() {
         let rs = RuleSet { rules: RuleSet::builtin_rules() };
         let ev = net_event("curl", 4444);
-        assert_eq!(rs.evaluate(&ev), Some(Action::Alerted));
+        let result = rs.evaluate(&ev);
+        assert_eq!(result.as_ref().map(|(a, _)| a), Some(&Action::Alerted));
     }
 
     #[test]
@@ -319,7 +311,7 @@ mod tests {
         };
         let ev_root = base_event("bash", 0, EventType::Exec);
         let ev_user = base_event("bash", 1000, EventType::Exec);
-        assert_eq!(rs.evaluate(&ev_root), Some(Action::Alerted));
+        assert_eq!(rs.evaluate(&ev_root).map(|(a, _)| a), Some(Action::Alerted));
         assert_eq!(rs.evaluate(&ev_user), None);
     }
 
@@ -336,8 +328,8 @@ mod tests {
                 match_uid:         None,
             }],
         };
-        assert_eq!(rs.evaluate(&exec_event("python3")),  Some(Action::Blocked));
-        assert_eq!(rs.evaluate(&exec_event("pypy")),     Some(Action::Blocked));
+        assert_eq!(rs.evaluate(&exec_event("python3")).map(|(a, _)| a),  Some(Action::Blocked));
+        assert_eq!(rs.evaluate(&exec_event("pypy")).map(|(a, _)| a),     Some(Action::Blocked));
         assert_eq!(rs.evaluate(&exec_event("ruby")),     None);
     }
 
@@ -359,6 +351,23 @@ mod tests {
                 },
             ],
         };
-        assert_eq!(rs.evaluate(&exec_event("nginx")), Some(Action::Alerted));
+        assert_eq!(rs.evaluate(&exec_event("nginx")).map(|(a, _)| a), Some(Action::Alerted));
+    }
+
+    #[test]
+    fn evaluate_returns_rule_name() {
+        let rs = RuleSet {
+            rules: vec![Rule {
+                name:              "my-custom-rule".into(),
+                action:            RuleAction::Block,
+                match_process:     vec!["bash".into()],
+                match_path_prefix: vec![],
+                match_exec_path:   vec![],
+                match_port:        vec![],
+                match_uid:         None,
+            }],
+        };
+        let result = rs.evaluate(&exec_event("bash"));
+        assert_eq!(result, Some((Action::Blocked, "my-custom-rule".into())));
     }
 }

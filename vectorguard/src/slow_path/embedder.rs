@@ -166,6 +166,7 @@ mod tests {
             event_type,
             severity:   Severity::Info,
             action:     Action::Allowed,
+            rule_name:  None,
             k8s:        None,
             raw:        serde_json::Value::Null,
         }

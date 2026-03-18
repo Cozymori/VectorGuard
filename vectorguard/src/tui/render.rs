@@ -30,6 +30,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     match app.active_tab {
         Tab::Dashboard   => draw_dashboard(f, app, chunks[1]),
         Tab::Events      => draw_events(f, app, chunks[1]),
+        Tab::Incidents   => draw_incidents(f, app, chunks[1]),
         Tab::Config      => draw_config(f, app, chunks[1]),
         Tab::ProcessTree => draw_process_tree(f, app, chunks[1]),
     }
@@ -37,7 +38,12 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_footer(f, app, chunks[2]);
 
     // 팝업은 맨 마지막에 렌더링 (최상단 레이어)
-    if let Some(idx) = app.selected_event {
+    if let Some(idx) = app.selected_incident {
+        let incidents = app.filtered_incidents();
+        if let Some(inc) = incidents.get(idx) {
+            draw_incident_detail(f, inc, area);
+        }
+    } else if let Some(idx) = app.selected_event {
         let events = app.filtered_events();
         if let Some(ev) = events.get(idx) {
             draw_event_detail(f, ev, area);
@@ -226,6 +232,132 @@ fn draw_events(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+// ── Incidents Tab ─────────────────────────────────────────────
+fn draw_incidents(f: &mut Frame, app: &App, area: Rect) {
+    let header = Row::new(vec!["Time", "PID", "Process", "Kind", "Rule", "Action"])
+        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .height(1);
+
+    let incidents = app.filtered_incidents();
+    let rows: Vec<Row> = incidents.iter().map(|i| {
+        let action_color = action_color(&i.action);
+        Row::new(vec![
+            Cell::from(i.timestamp.as_str()),
+            Cell::from(i.pid.to_string()),
+            Cell::from(i.process.as_str()),
+            Cell::from(i.kind.as_str()),
+            Cell::from(Span::styled(i.rule.as_str(), Style::default().fg(Color::Yellow))),
+            Cell::from(Span::styled(i.action.as_str(), Style::default().fg(action_color))),
+        ])
+        .height(1)
+    }).collect();
+
+    let filter_label = match app.incident_filter {
+        super::app::IncidentFilter::All     => "All",
+        super::app::IncidentFilter::Blocked => "Blocked",
+        super::app::IncidentFilter::Alerted => "Alerted",
+    };
+    let title = format!(
+        " Incidents [{}] ({} total) — Tab:filter  ↑↓:scroll  Enter:detail ",
+        filter_label, incidents.len()
+    );
+
+    let mut state = TableState::default();
+    if !incidents.is_empty() {
+        state.select(Some(app.incident_scroll));
+    }
+
+    let table = Table::new(rows, [
+        Constraint::Length(12),
+        Constraint::Length(7),
+        Constraint::Length(16),
+        Constraint::Min(18),
+        Constraint::Length(24),
+        Constraint::Length(8),
+    ])
+    .header(header)
+    .block(Block::default().borders(Borders::ALL).title(title)
+        .style(Style::default().bg(Color::Black)))
+    .row_highlight_style(Style::default()
+        .bg(Color::DarkGray)
+        .add_modifier(Modifier::BOLD));
+
+    f.render_stateful_widget(table, area, &mut state);
+}
+
+fn draw_incident_detail(f: &mut Frame, inc: &super::app::IncidentRow, area: Rect) {
+    let popup_area = centered_rect(65, 60, area);
+    f.render_widget(Clear, popup_area);
+
+    let sev_color = severity_color(&inc.severity);
+    let act_color = action_color(&inc.action);
+
+    let pid_str  = inc.pid.to_string();
+    let ppid_str = inc.ppid.to_string();
+    let uid_str  = inc.uid.to_string();
+    let sev_str  = format!("{:?}", inc.severity);
+
+    let text = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Timestamp  : ", Style::default().fg(Color::DarkGray)),
+            Span::raw(inc.timestamp.as_str()),
+        ]),
+        Line::from(vec![
+            Span::styled("  PID        : ", Style::default().fg(Color::DarkGray)),
+            Span::styled(pid_str.as_str(), Style::default().fg(Color::Cyan)),
+        ]),
+        Line::from(vec![
+            Span::styled("  PPID       : ", Style::default().fg(Color::DarkGray)),
+            Span::raw(ppid_str.as_str()),
+        ]),
+        Line::from(vec![
+            Span::styled("  UID        : ", Style::default().fg(Color::DarkGray)),
+            Span::raw(uid_str.as_str()),
+        ]),
+        Line::from(vec![
+            Span::styled("  Process    : ", Style::default().fg(Color::DarkGray)),
+            Span::styled(inc.process.as_str(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Event      : ", Style::default().fg(Color::DarkGray)),
+            Span::raw(inc.full_kind.as_str()),
+        ]),
+        Line::from(vec![
+            Span::styled("  Rule       : ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                if inc.rule.is_empty() { "(none)" } else { inc.rule.as_str() },
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Severity   : ", Style::default().fg(Color::DarkGray)),
+            Span::styled(sev_str.as_str(), Style::default().fg(sev_color).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(vec![
+            Span::styled("  Action     : ", Style::default().fg(Color::DarkGray)),
+            Span::styled(inc.action.as_str(), Style::default().fg(act_color).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Press Esc or Enter to close",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+
+    let p = Paragraph::new(text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Incident Detail ")
+                .border_style(Style::default().fg(Color::Red))
+                .style(Style::default().bg(Color::Black)),
+        );
+    f.render_widget(p, popup_area);
+}
+
 // ── Config Tab ────────────────────────────────────────────────
 fn draw_config(f: &mut Frame, app: &App, area: Rect) {
     let p = Paragraph::new(app.config_text.as_str())
@@ -392,11 +524,24 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", Style::default().fg(Color::Yellow)),
             Span::raw(":cancel"),
         ])
+    } else if app.active_tab == Tab::Incidents {
+        Line::from(vec![
+            Span::styled(" q", Style::default().fg(Color::Yellow)),
+            Span::raw(":quit  "),
+            Span::styled("Tab/1-5", Style::default().fg(Color::Yellow)),
+            Span::raw(":switch  "),
+            Span::styled("↑↓/jk", Style::default().fg(Color::Yellow)),
+            Span::raw(":scroll  "),
+            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(":detail  "),
+            Span::styled("f", Style::default().fg(Color::Yellow)),
+            Span::raw(":filter(All/Blocked/Alerted)"),
+        ])
     } else {
         Line::from(vec![
             Span::styled(" q", Style::default().fg(Color::Yellow)),
             Span::raw(":quit  "),
-            Span::styled("Tab/1-4", Style::default().fg(Color::Yellow)),
+            Span::styled("Tab/1-5", Style::default().fg(Color::Yellow)),
             Span::raw(":switch  "),
             Span::styled("↑↓/jk", Style::default().fg(Color::Yellow)),
             Span::raw(":scroll  "),

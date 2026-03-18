@@ -11,32 +11,42 @@ pub enum AppState {
 pub enum Tab {
     Dashboard,
     Events,
+    Incidents,
     Config,
     ProcessTree,
 }
 
 impl Tab {
     pub fn titles() -> Vec<&'static str> {
-        vec!["Dashboard", "Events", "Config", "Process Tree"]
+        vec!["Dashboard", "Events", "Incidents", "Config", "Process Tree"]
     }
 
     pub fn index(&self) -> usize {
         match self {
             Tab::Dashboard   => 0,
             Tab::Events      => 1,
-            Tab::Config      => 2,
-            Tab::ProcessTree => 3,
+            Tab::Incidents   => 2,
+            Tab::Config      => 3,
+            Tab::ProcessTree => 4,
         }
     }
 
     pub fn from_index(i: usize) -> Self {
         match i {
             1 => Tab::Events,
-            2 => Tab::Config,
-            3 => Tab::ProcessTree,
+            2 => Tab::Incidents,
+            3 => Tab::Config,
+            4 => Tab::ProcessTree,
             _ => Tab::Dashboard,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum IncidentFilter {
+    All,
+    Blocked,
+    Alerted,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -64,6 +74,12 @@ pub struct App {
     pub input_mode:    InputMode,
     pub filter_input:  String,
     pub filter_query:  String,
+
+    // Incidents tab
+    pub incidents:         Vec<IncidentRow>,
+    pub incident_scroll:   usize,
+    pub incident_filter:   IncidentFilter,
+    pub selected_incident: Option<usize>,
 
     // Process Tree tab
     pub process_map:   HashMap<u32, ProcessNode>,
@@ -95,6 +111,20 @@ pub struct EventRow {
 }
 
 #[derive(Debug, Clone)]
+pub struct IncidentRow {
+    pub timestamp: String,
+    pub pid:       u32,
+    pub ppid:      u32,
+    pub uid:       u32,
+    pub process:   String,
+    pub kind:      String,
+    pub full_kind: String,
+    pub severity:  Severity,
+    pub action:    String,
+    pub rule:      String,
+}
+
+#[derive(Debug, Clone)]
 pub struct ProcessNode {
     pub pid:         u32,
     pub ppid:        u32,
@@ -117,6 +147,10 @@ impl App {
             input_mode:     InputMode::Normal,
             filter_input:   String::new(),
             filter_query:   String::new(),
+            incidents:          Vec::new(),
+            incident_scroll:    0,
+            incident_filter:    IncidentFilter::All,
+            selected_incident:  None,
             process_map:    HashMap::new(),
             proc_scroll:    0,
             config_text,
@@ -131,6 +165,7 @@ impl App {
     pub fn scroll_up(&mut self) {
         match self.active_tab {
             Tab::ProcessTree => { self.proc_scroll = self.proc_scroll.saturating_sub(1); }
+            Tab::Incidents   => { self.incident_scroll = self.incident_scroll.saturating_sub(1); }
             _ => { self.event_scroll = self.event_scroll.saturating_sub(1); }
         }
     }
@@ -140,6 +175,12 @@ impl App {
             Tab::ProcessTree => {
                 if self.proc_scroll + 1 < self.process_map.len() {
                     self.proc_scroll += 1;
+                }
+            }
+            Tab::Incidents => {
+                let len = self.filtered_incidents().len();
+                if self.incident_scroll + 1 < len {
+                    self.incident_scroll += 1;
                 }
             }
             _ => {
@@ -152,18 +193,48 @@ impl App {
     }
 
     pub fn open_detail(&mut self) {
-        let len = self.filtered_events().len();
-        if len > 0 {
-            self.selected_event = Some(self.event_scroll);
+        match self.active_tab {
+            Tab::Incidents => {
+                let len = self.filtered_incidents().len();
+                if len > 0 {
+                    self.selected_incident = Some(self.incident_scroll);
+                }
+            }
+            _ => {
+                let len = self.filtered_events().len();
+                if len > 0 {
+                    self.selected_event = Some(self.event_scroll);
+                }
+            }
         }
     }
 
     pub fn close_detail(&mut self) {
         self.selected_event = None;
+        self.selected_incident = None;
     }
 
     pub fn is_detail_open(&self) -> bool {
-        self.selected_event.is_some()
+        self.selected_event.is_some() || self.selected_incident.is_some()
+    }
+
+    pub fn cycle_incident_filter(&mut self) {
+        self.incident_filter = match self.incident_filter {
+            IncidentFilter::All     => IncidentFilter::Blocked,
+            IncidentFilter::Blocked => IncidentFilter::Alerted,
+            IncidentFilter::Alerted => IncidentFilter::All,
+        };
+        self.incident_scroll = 0;
+    }
+
+    pub fn filtered_incidents(&self) -> Vec<&IncidentRow> {
+        self.incidents.iter().filter(|i| {
+            match self.incident_filter {
+                IncidentFilter::All     => true,
+                IncidentFilter::Blocked => i.action.contains("Block") || i.action.contains("Kill"),
+                IncidentFilter::Alerted => i.action.contains("Alert"),
+            }
+        }).collect()
     }
 
     pub fn filtered_events(&self) -> Vec<&EventRow> {
@@ -248,6 +319,25 @@ impl App {
         };
 
         let action_str = format!("{:?}", ev.action);
+
+        // Track incidents (Blocked / Alerted / Killed) — before events push to avoid move
+        if matches!(ev.action, Action::Blocked | Action::Alerted | Action::Killed) {
+            self.incidents.push(IncidentRow {
+                timestamp: format_ts(ev.timestamp),
+                pid:       ev.process.pid,
+                ppid:      ev.process.ppid,
+                uid:       ev.process.uid,
+                process:   ev.process.binary.clone(),
+                kind:      kind.clone(),
+                full_kind: full_kind.clone(),
+                severity:  ev.severity.clone(),
+                action:    action_str.clone(),
+                rule:      ev.rule_name.clone().unwrap_or_default(),
+            });
+            if self.incidents.len() > 500 {
+                self.incidents.remove(0);
+            }
+        }
 
         self.events.push(EventRow {
             timestamp: format_ts(ev.timestamp),

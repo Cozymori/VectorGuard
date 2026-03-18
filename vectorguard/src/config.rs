@@ -108,7 +108,11 @@ pub struct SlowPathConfig {
 pub struct EmbedderConfig {
     pub backend:     EmbedderBackend,
     pub model:       String,
+    #[serde(default)]
     pub api_key_env: String,
+    /// Optional custom endpoint (e.g. Ollama: "http://localhost:11434")
+    #[serde(default)]
+    pub endpoint:    Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -116,7 +120,8 @@ pub struct EmbedderConfig {
 pub enum EmbedderBackend {
     Local,
     Openai,
-    Claude,
+    Voyage,
+    Gemini,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

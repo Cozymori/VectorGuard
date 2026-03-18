@@ -1,8 +1,6 @@
 mod context;
-mod embedder;
+pub mod embedder;
 mod vectordb;
-
-pub use embedder::VECTOR_DIM;
 
 use std::sync::Mutex;
 use tracing::{debug, warn};
@@ -27,11 +25,12 @@ impl SlowPath {
     pub async fn new(cfg: &SlowPathConfig) -> Self {
         let embedder = Embedder::new(cfg.embedder.clone());
         let vectordb = VectorDb::new(&cfg.vectordb);
+        let dim = embedder.dim();
 
         let available = if cfg.enabled {
-            match vectordb.ensure_collection(VECTOR_DIM).await {
+            match vectordb.ensure_collection(dim).await {
                 Ok(_) => {
-                    tracing::info!("Slow Path initialized (Qdrant connected)");
+                    tracing::info!("Slow Path initialized (Qdrant connected, dim={})", dim);
                     true
                 }
                 Err(e) => {
@@ -49,7 +48,7 @@ impl SlowPath {
             threshold: cfg.similarity_threshold,
             enabled:   cfg.enabled,
             available,
-            context:   Mutex::new(ContextWindow::new(cfg.time_window_secs, VECTOR_DIM)),
+            context:   Mutex::new(ContextWindow::new(cfg.time_window_secs, dim)),
         }
     }
 
@@ -75,13 +74,15 @@ impl SlowPath {
         let search_vector = {
             let mut ctx = self.context.lock().unwrap();
             let blended = if let Some(ctx_vec) = ctx.context_vector(event.process.pid) {
-                blend(&current_vector, &ctx_vec, 0.7)
+                blend(&current_vector, &ctx_vec)
             } else {
                 current_vector.clone()
             };
             // Push current event into context window *after* reading context
             // so the current event doesn't pollute its own search
             ctx.push(event.process.pid, event.timestamp, current_vector.clone());
+            // Periodically clean up stale PIDs
+            ctx.prune_stale_pids();
             blended
         };
 
@@ -115,8 +116,18 @@ impl SlowPath {
 }
 
 /// Linearly blend two unit vectors and re-normalize the result.
-/// `alpha` controls how much weight `a` (current event) gets vs `b` (context).
-fn blend(a: &[f32], b: &[f32], alpha: f32) -> Vec<f32> {
+/// If dimensions mismatch, logs a warning and returns `a` unchanged.
+fn blend(a: &[f32], b: &[f32]) -> Vec<f32> {
+    if a.len() != b.len() {
+        tracing::error!(
+            "blend dimension mismatch: a={} b={} — using current vector only",
+            a.len(),
+            b.len()
+        );
+        return a.to_vec();
+    }
+
+    let alpha = 0.7f32;
     let beta = 1.0 - alpha;
     let mut result: Vec<f32> = a.iter().zip(b.iter()).map(|(x, y)| alpha * x + beta * y).collect();
     let norm: f32 = result.iter().map(|x| x * x).sum::<f32>().sqrt();

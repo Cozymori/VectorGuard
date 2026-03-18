@@ -135,6 +135,7 @@ fn parse_auditd_syscall(line: &str) -> Result<NormalizedEvent> {
         event_type,
         severity,
         action:     Action::Allowed,
+        rule_name:  None,
         k8s:        None,
         raw:        serde_json::Value::String(line.to_string()),
     })

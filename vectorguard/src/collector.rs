@@ -146,6 +146,7 @@ fn parse_raw_event(data: &[u8]) -> Result<NormalizedEvent> {
         event_type,
         severity,
         action,
+        rule_name:  None,
         k8s:        None,
         raw:        serde_json::Value::Null,
     })

@@ -74,13 +74,19 @@ impl EventHandler {
                 KeyCode::Tab               => app.next_tab(),
                 KeyCode::Char('1')         => app.active_tab = Tab::Dashboard,
                 KeyCode::Char('2')         => app.active_tab = Tab::Events,
-                KeyCode::Char('3')         => app.active_tab = Tab::Config,
-                KeyCode::Char('4')         => app.active_tab = Tab::ProcessTree,
+                KeyCode::Char('3')         => app.active_tab = Tab::Incidents,
+                KeyCode::Char('4')         => app.active_tab = Tab::Config,
+                KeyCode::Char('5')         => app.active_tab = Tab::ProcessTree,
                 KeyCode::Up   | KeyCode::Char('k') => app.scroll_up(),
                 KeyCode::Down | KeyCode::Char('j') => app.scroll_down(),
                 KeyCode::Enter => {
-                    if app.active_tab == Tab::Events {
+                    if app.active_tab == Tab::Events || app.active_tab == Tab::Incidents {
                         app.open_detail();
+                    }
+                }
+                KeyCode::Char('f') => {
+                    if app.active_tab == Tab::Incidents {
+                        app.cycle_incident_filter();
                     }
                 }
                 KeyCode::Char('/') => {

@@ -146,6 +146,7 @@ pub enum VectorDbBackend {
 pub struct AiAdvisorConfig {
     pub enabled:             bool,
     pub api_key:             String,
+    pub model:               String,
     pub trigger_threshold:   u32,
     pub cooldown_seconds:    u64,
     pub context_window_size: usize,
@@ -157,6 +158,7 @@ impl Default for AiAdvisorConfig {
         Self {
             enabled:             false,
             api_key:             String::new(),
+            model:               String::new(),
             trigger_threshold:   3,
             cooldown_seconds:    300,
             context_window_size: 20,

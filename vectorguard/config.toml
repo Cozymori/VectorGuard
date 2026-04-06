@@ -58,7 +58,8 @@ collection = "behaviors"
 # ── AI Rule Advisor ──────────────────────────────────────────
 [ai_advisor]
 enabled              = false
-api_key              = ""          # Claude API key (sk-ant-...)
+api_key              = ""          # OpenAI API key (sk-...)
+model                = "gpt-4o"   # gpt-4o | gpt-4o-mini | gpt-4-turbo
 trigger_threshold    = 3           # same pattern N times → call AI
 cooldown_seconds     = 300         # min gap between API calls per pattern
 context_window_size  = 20          # recent events sent as context

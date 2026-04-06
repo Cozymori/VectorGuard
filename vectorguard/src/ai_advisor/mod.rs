@@ -163,16 +163,16 @@ impl AiAdvisor {
             events = events_summary.join("\n"),
         );
 
+        let model = if self.cfg.model.is_empty() { "gpt-4o" } else { &self.cfg.model };
         let body = json!({
-            "model": "claude-opus-4-6",
+            "model": model,
             "max_tokens": 1024,
             "messages": [{"role": "user", "content": prompt}]
         });
 
         let resp = match self.http
-            .post("https://api.anthropic.com/v1/messages")
-            .header("x-api-key", &self.cfg.api_key)
-            .header("anthropic-version", "2023-06-01")
+            .post("https://api.openai.com/v1/chat/completions")
+            .header("Authorization", format!("Bearer {}", self.cfg.api_key))
             .header("content-type", "application/json")
             .json(&body)
             .send()
@@ -187,7 +187,7 @@ impl AiAdvisor {
             Err(e) => { warn!("AI advisor response parse error: {}", e); return; }
         };
 
-        let text = json_resp["content"][0]["text"].as_str().unwrap_or("");
+        let text = json_resp["choices"][0]["message"]["content"].as_str().unwrap_or("");
         let toml_block = Self::extract_toml(text);
 
         if toml_block.is_empty() {

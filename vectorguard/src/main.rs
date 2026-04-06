@@ -25,11 +25,17 @@ use event::NormalizedEvent;
 
 const READY_FILE: &str = "/tmp/vectorguard.ready";
 
+const SYSTEM_CONFIG: &str = "/etc/vectorguard/config.toml";
+
 fn parse_args() -> String {
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
+            // `vectorguard tui` → use system config
+            "tui" => {
+                return SYSTEM_CONFIG.to_string();
+            }
             "--config" | "-c" => {
                 if i + 1 < args.len() {
                     return args[i + 1].clone();
@@ -39,15 +45,21 @@ fn parse_args() -> String {
                 return s.trim_start_matches("--config=").to_string();
             }
             "--help" | "-h" => {
-                eprintln!("Usage: vectorguard [--config <path>]");
-                eprintln!("  --config, -c <path>  Path to config.toml (default: config.toml)");
+                eprintln!("Usage: vectorguard [tui | --config <path>]");
+                eprintln!("  tui                  Launch TUI with system config ({})", SYSTEM_CONFIG);
+                eprintln!("  --config, -c <path>  Path to config.toml");
                 std::process::exit(0);
             }
             _ => {}
         }
         i += 1;
     }
-    "config.toml".to_string()
+    // Default: if system config exists use it, otherwise fall back to local
+    if std::path::Path::new(SYSTEM_CONFIG).exists() {
+        SYSTEM_CONFIG.to_string()
+    } else {
+        "config.toml".to_string()
+    }
 }
 
 #[tokio::main]

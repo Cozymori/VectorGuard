@@ -31,15 +31,24 @@ pub async fn run(app: App, mut event_rx: Option<mpsc::Receiver<NormalizedEvent>>
         return run_headless(&mut event_rx).await;
     }
 
+    // Restore terminal on panic so the shell isn't left in raw mode
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
+        hook(info);
+    }));
+
     let backend = CrosstermBackend::new(stdout());
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
 
     let result = run_loop(&mut terminal, app, &mut event_rx).await;
 
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
+    // Always restore terminal, even on error
+    let _ = disable_raw_mode();
+    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
+    let _ = terminal.show_cursor();
 
     result
 }

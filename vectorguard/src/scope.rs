@@ -116,6 +116,7 @@ mod tests {
     fn base_cfg() -> ScopeConfig {
         ScopeConfig {
             targets:             vec![],
+            exclude_processes:   vec![],
             include_namespaces:  vec![],
             exclude_namespaces:  vec![],
             label_selectors:     vec![],

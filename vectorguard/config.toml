@@ -6,6 +6,8 @@ hot_reload = true
 [scope]
 # Glob patterns matched against process binary name. Empty = all processes.
 targets = []
+# Process binary names (globs) to always exclude — noisy system daemons.
+exclude_processes = ["systemd-journald", "journald", "systemd", "sd-journal", "kworker*", "kthread*", "ksoftirqd*", "migration*"]
 # K8s namespace glob patterns to include (non-empty = allowlist). Non-K8s events unaffected.
 include_namespaces = []
 # K8s namespace glob patterns to exclude (takes precedence over include). Non-K8s events unaffected.

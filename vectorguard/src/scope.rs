@@ -21,6 +21,7 @@ use crate::event::NormalizedEvent;
 
 pub struct ScopeFilter {
     target_patterns:    Vec<glob::Pattern>,
+    exclude_processes:  Vec<glob::Pattern>,
     include_ns:         Vec<glob::Pattern>,
     exclude_ns:         Vec<glob::Pattern>,
     label_selectors:    Vec<(String, String)>,
@@ -29,6 +30,7 @@ pub struct ScopeFilter {
 impl ScopeFilter {
     pub fn new(cfg: &ScopeConfig) -> Self {
         let target_patterns  = compile_patterns(&cfg.targets,             "target");
+        let exclude_processes = compile_patterns(&cfg.exclude_processes,  "exclude_processes");
         let include_ns       = compile_patterns(&cfg.include_namespaces,  "include_namespaces");
         let exclude_ns       = compile_patterns(&cfg.exclude_namespaces,  "exclude_namespaces");
 
@@ -45,17 +47,23 @@ impl ScopeFilter {
             })
             .collect();
 
-        Self { target_patterns, include_ns, exclude_ns, label_selectors }
+        Self { target_patterns, exclude_processes, include_ns, exclude_ns, label_selectors }
     }
 
     /// Returns `true` if the event passes all scope rules and should be processed.
     pub fn allows(&self, event: &NormalizedEvent) -> bool {
+        let binary = &event.process.binary;
+
+        // ── 0. Process exclude filter (always applied) ───────────
+        if self.exclude_processes.iter().any(|p| p.matches(binary)) {
+            return false;
+        }
+
         // ── 1. Process target filter ─────────────────────────────
-        if !self.target_patterns.is_empty() {
-            let binary = &event.process.binary;
-            if !self.target_patterns.iter().any(|p| p.matches(binary)) {
-                return false;
-            }
+        if !self.target_patterns.is_empty()
+            && !self.target_patterns.iter().any(|p| p.matches(binary))
+        {
+            return false;
         }
 
         // ── K8s-specific filters (only when K8sMeta is present) ──

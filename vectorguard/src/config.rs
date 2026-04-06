@@ -36,6 +36,10 @@ pub struct ScopeConfig {
     /// Glob patterns matched against process binary name.
     /// Empty = monitor all processes.
     pub targets:              Vec<String>,
+    /// Process binary names (globs) to always exclude — useful for noisy
+    /// system daemons like journald that generate irrelevant events.
+    #[serde(default = "default_exclude_processes")]
+    pub exclude_processes:    Vec<String>,
     /// K8s namespace glob patterns to include (K8s events only).
     /// Empty = include all namespaces.
     pub include_namespaces:   Vec<String>,
@@ -45,6 +49,19 @@ pub struct ScopeConfig {
     /// K8s label selectors: "key=value" pairs that must ALL match.
     /// Empty = no label filtering.
     pub label_selectors:      Vec<String>,
+}
+
+fn default_exclude_processes() -> Vec<String> {
+    vec![
+        "systemd-journald".into(),
+        "journald".into(),
+        "systemd".into(),
+        "sd-journal".into(),
+        "kworker*".into(),
+        "kthread*".into(),
+        "ksoftirqd*".into(),
+        "migration*".into(),
+    ]
 }
 
 // ── Adapter ───────────────────────────────────────────────────

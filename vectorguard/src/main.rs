@@ -163,7 +163,7 @@ async fn main() -> Result<()> {
 
     // ── Run TUI ───────────────────────────────────────────────────
     let config_text = std::fs::read_to_string(&config_path).unwrap_or_default();
-    let app = tui::App::new(config_text);
+    let app = tui::App::new(config_text, config_path.clone());
     let result = tui::run(app, Some(proc_rx)).await;
 
     // Cleanup ready file on exit

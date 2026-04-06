@@ -3,6 +3,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use std::time::Duration;
 
 use super::app::{App, AppState, InputMode, Tab};
+use super::app::FieldType;
 
 pub struct EventHandler {
     tick_ms: u64,
@@ -41,7 +42,30 @@ impl EventHandler {
                 return Ok(false);
             }
 
-            // 2순위: 필터 입력 모드
+            // 2순위: config 편집 모드
+            if app.config_editing {
+                match key.code {
+                    KeyCode::Esc => { app.cancel_config_edit(); }
+                    KeyCode::Enter => { app.confirm_config_edit(); }
+                    KeyCode::Backspace => { app.config_edit_buf.pop(); }
+                    KeyCode::Char(c) => {
+                        // For bool fields, toggle directly without typing
+                        if let Some(f) = app.config_fields.get(app.config_field_idx) {
+                            if f.field_type == FieldType::Bool {
+                                let toggled = if app.config_edit_buf == "true" { "false" } else { "true" };
+                                app.config_edit_buf = toggled.to_string();
+                                app.confirm_config_edit();
+                                return Ok(false);
+                            }
+                        }
+                        app.config_edit_buf.push(c);
+                    }
+                    _ => {}
+                }
+                return Ok(false);
+            }
+
+            // 3순위: 필터 입력 모드
             if app.input_mode == InputMode::Filtering {
                 match key.code {
                     KeyCode::Esc => {
@@ -80,9 +104,17 @@ impl EventHandler {
                 KeyCode::Up   | KeyCode::Char('k') => app.scroll_up(),
                 KeyCode::Down | KeyCode::Char('j') => app.scroll_down(),
                 KeyCode::Enter => {
-                    if app.active_tab == Tab::Events || app.active_tab == Tab::Incidents {
-                        app.open_detail();
+                    match app.active_tab {
+                        Tab::Events | Tab::Incidents => app.open_detail(),
+                        Tab::Config => app.start_config_edit(),
+                        _ => {}
                     }
+                }
+                KeyCode::Char('e') if app.active_tab == Tab::Config => {
+                    app.start_config_edit();
+                }
+                KeyCode::Char('s') if app.active_tab == Tab::Config => {
+                    app.save_config();
                 }
                 KeyCode::Char('f') => {
                     if app.active_tab == Tab::Incidents {

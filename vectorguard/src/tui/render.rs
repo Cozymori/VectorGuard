@@ -360,15 +360,122 @@ fn draw_incident_detail(f: &mut Frame, inc: &super::app::IncidentRow, area: Rect
 
 // ── Config Tab ────────────────────────────────────────────────
 fn draw_config(f: &mut Frame, app: &App, area: Rect) {
-    let p = Paragraph::new(app.config_text.as_str())
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" config.toml (read-only) ")
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .split(area);
+
+    // Build rows
+    let mut last_section = "";
+    let mut rows: Vec<Row> = Vec::new();
+
+    for (i, field) in app.config_fields.iter().enumerate() {
+        // Section separator row
+        if field.section != last_section {
+            last_section = field.section;
+            rows.push(
+                Row::new(vec![
+                    Cell::from(format!("[{}]", field.section))
+                        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                    Cell::from(""),
+                    Cell::from(""),
+                ])
+                .height(1)
                 .style(Style::default().bg(Color::Black)),
-        )
-        .wrap(Wrap { trim: false });
-    f.render_widget(p, area);
+            );
+        }
+
+        let is_selected = i == app.config_field_idx;
+        let display_val = field.value.trim_matches('"');
+        let val_color = match display_val {
+            "true"  => Color::Green,
+            "false" => Color::Red,
+            _       => Color::Yellow,
+        };
+
+        let row = Row::new(vec![
+            Cell::from(format!("  {}", field.label))
+                .style(Style::default().fg(Color::White)),
+            Cell::from(display_val.to_string())
+                .style(Style::default().fg(val_color).add_modifier(Modifier::BOLD)),
+            Cell::from(field.description)
+                .style(Style::default().fg(Color::DarkGray)),
+        ])
+        .height(1)
+        .style(if is_selected {
+            Style::default().bg(Color::DarkGray)
+        } else {
+            Style::default().bg(Color::Black)
+        });
+
+        rows.push(row);
+    }
+
+    let save_indicator = if app.config_modified { " ● unsaved" } else { "" };
+    let title = format!(" Config{} — ↑↓:select  e/Enter:edit  s:save ", save_indicator);
+
+    let table = Table::new(rows, [
+        Constraint::Length(26),
+        Constraint::Length(22),
+        Constraint::Min(20),
+    ])
+    .block(Block::default().borders(Borders::ALL).title(title)
+        .border_style(if app.config_modified {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default()
+        })
+        .style(Style::default().bg(Color::Black)));
+
+    f.render_widget(table, chunks[0]);
+
+    // Status bar
+    let status = if app.config_modified {
+        Paragraph::new(Span::styled(
+            " s:save changes  (hot-reload will apply automatically)",
+            Style::default().fg(Color::Yellow),
+        ))
+    } else {
+        Paragraph::new(Span::styled(
+            " Config saved — changes apply via hot-reload",
+            Style::default().fg(Color::DarkGray),
+        ))
+    };
+    f.render_widget(status, chunks[1]);
+
+    // Edit popup
+    if app.config_editing {
+        if let Some(field) = app.config_fields.get(app.config_field_idx) {
+            draw_config_edit_popup(f, field.label, &app.config_edit_buf, area);
+        }
+    }
+}
+
+fn draw_config_edit_popup(f: &mut Frame, field_name: &str, buf: &str, area: Rect) {
+    let popup_area = centered_rect(55, 20, area);
+    f.render_widget(Clear, popup_area);
+
+    let content = format!("{}_ ", buf);
+    let p = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("  {}", content),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Enter:confirm  Esc:cancel",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ])
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" Edit: {} ", field_name))
+            .border_style(Style::default().fg(Color::Cyan))
+            .style(Style::default().bg(Color::Black)),
+    );
+    f.render_widget(p, popup_area);
 }
 
 // ── Process Tree Tab ──────────────────────────────────────────
@@ -523,6 +630,19 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
             Span::raw(":apply  "),
             Span::styled("Esc", Style::default().fg(Color::Yellow)),
             Span::raw(":cancel"),
+        ])
+    } else if app.active_tab == Tab::Config {
+        Line::from(vec![
+            Span::styled(" q", Style::default().fg(Color::Yellow)),
+            Span::raw(":quit  "),
+            Span::styled("Tab/1-5", Style::default().fg(Color::Yellow)),
+            Span::raw(":switch  "),
+            Span::styled("↑↓/jk", Style::default().fg(Color::Yellow)),
+            Span::raw(":select  "),
+            Span::styled("e/Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(":edit  "),
+            Span::styled("s", Style::default().fg(Color::Yellow)),
+            Span::raw(":save"),
         ])
     } else if app.active_tab == Tab::Incidents {
         Line::from(vec![

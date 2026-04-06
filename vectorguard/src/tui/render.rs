@@ -671,7 +671,10 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
             Span::raw(":filter"),
         ])
     };
-    f.render_widget(Paragraph::new(text), area);
+    f.render_widget(
+        Paragraph::new(text).style(Style::default().bg(Color::Black)),
+        area,
+    );
 }
 
 // ── Helpers ───────────────────────────────────────────────────

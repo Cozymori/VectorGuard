@@ -64,7 +64,10 @@ fn parse_args() -> String {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    // Write logs to stderr so they don't corrupt the TUI on stdout
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .init();
 
     let config_path = parse_args();
 

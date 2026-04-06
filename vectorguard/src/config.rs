@@ -11,6 +11,8 @@ pub struct Config {
     pub fast_path:  FastPathConfig,
     pub slow_path:  SlowPathConfig,
     pub tui:        TuiConfig,
+    #[serde(default)]
+    pub ai_advisor: AiAdvisorConfig,
 }
 
 impl Config {
@@ -136,6 +138,31 @@ pub struct VectorDbConfig {
 pub enum VectorDbBackend {
     Qdrant,
     Usearch,
+}
+
+// ── AI Advisor ────────────────────────────────────────────────
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct AiAdvisorConfig {
+    pub enabled:             bool,
+    pub api_key:             String,
+    pub trigger_threshold:   u32,
+    pub cooldown_seconds:    u64,
+    pub context_window_size: usize,
+    pub window_secs:         u64,
+}
+
+impl Default for AiAdvisorConfig {
+    fn default() -> Self {
+        Self {
+            enabled:             false,
+            api_key:             String::new(),
+            trigger_threshold:   3,
+            cooldown_seconds:    300,
+            context_window_size: 20,
+            window_secs:         60,
+        }
+    }
 }
 
 // ── TUI ───────────────────────────────────────────────────────

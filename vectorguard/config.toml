@@ -55,6 +55,15 @@ backend = "qdrant"         # qdrant | usearch
 url = "http://localhost:6333"
 collection = "behaviors"
 
+# ── AI Rule Advisor ──────────────────────────────────────────
+[ai_advisor]
+enabled              = false
+api_key              = ""          # Claude API key (sk-ant-...)
+trigger_threshold    = 3           # same pattern N times → call AI
+cooldown_seconds     = 300         # min gap between API calls per pattern
+context_window_size  = 20          # recent events sent as context
+window_secs          = 60          # sliding window duration
+
 # ── TUI ─────────────────────────────────────────────────────
 [tui]
 refresh_rate_ms = 200

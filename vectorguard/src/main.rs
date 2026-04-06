@@ -2,6 +2,7 @@
 mod collector;
 #[cfg(target_os = "linux")]
 mod enforcer;
+mod ai_advisor;
 mod config;
 mod event;
 mod adapter;
@@ -135,18 +136,22 @@ async fn main() -> Result<()> {
     let fast_path       = fast_path::FastPath::new(&cfg.fast_path);
     let slow_path       = slow_path::SlowPath::new(&cfg.slow_path).await;
     let incident_logger = Arc::new(incident::IncidentLogger::new(None));
+    let ai_advisor      = ai_advisor::AiAdvisor::new(
+        cfg.ai_advisor.clone(),
+        cfg.fast_path.rules_path.clone(),
+    );
 
     // ── Event Processing Pipeline Task ────────────────────────────
     #[cfg(target_os = "linux")]
     tokio::spawn(run_pipeline(
         raw_rx, proc_tx, scope_filter, fast_path, slow_path,
-        incident_logger.clone(), reload_rx, Some(enf_shared),
+        incident_logger.clone(), ai_advisor, reload_rx, Some(enf_shared),
     ));
 
     #[cfg(not(target_os = "linux"))]
     tokio::spawn(run_pipeline(
         raw_rx, proc_tx, scope_filter, fast_path, slow_path,
-        incident_logger.clone(), reload_rx, None,
+        incident_logger.clone(), ai_advisor, reload_rx, None,
     ));
 
     // ── Signal ready (for K8s liveness probe) ────────────────────
@@ -169,13 +174,14 @@ async fn main() -> Result<()> {
 
 /// Event processing pipeline with live hot-reload support.
 async fn run_pipeline(
-    raw_rx:           mpsc::Receiver<NormalizedEvent>,
-    proc_tx:          mpsc::Sender<NormalizedEvent>,
-    mut scope_filter: scope::ScopeFilter,
-    mut fast_path:    fast_path::FastPath,
-    mut slow_path:    slow_path::SlowPath,
-    incident_logger:  Arc<incident::IncidentLogger>,
-    mut reload_rx:    watch::Receiver<config::Config>,
+    raw_rx:               mpsc::Receiver<NormalizedEvent>,
+    proc_tx:              mpsc::Sender<NormalizedEvent>,
+    mut scope_filter:     scope::ScopeFilter,
+    mut fast_path:        fast_path::FastPath,
+    mut slow_path:        slow_path::SlowPath,
+    incident_logger:      Arc<incident::IncidentLogger>,
+    mut ai_advisor:       ai_advisor::AiAdvisor,
+    mut reload_rx:        watch::Receiver<config::Config>,
     #[cfg(target_os = "linux")]
     enf_opt: Option<Arc<Mutex<Option<enforcer::Enforcer>>>>,
     #[cfg(not(target_os = "linux"))]
@@ -209,6 +215,7 @@ async fn run_pipeline(
                         fast_path.evaluate(&mut ev);
                         slow_path.analyze(&mut ev).await;
                         incident_logger.record(&ev);
+                        ai_advisor.analyze(&ev).await;
 
                         if proc_tx.send(ev).await.is_err() {
                             break;
@@ -224,6 +231,7 @@ async fn run_pipeline(
                 scope_filter = scope::ScopeFilter::new(&new_cfg.scope);
                 fast_path    = fast_path::FastPath::new(&new_cfg.fast_path);
                 slow_path    = slow_path::SlowPath::new(&new_cfg.slow_path).await;
+                ai_advisor.update_config(new_cfg.ai_advisor.clone());
 
                 #[cfg(target_os = "linux")]
                 if let Some(ref enf_arc) = enf_opt {

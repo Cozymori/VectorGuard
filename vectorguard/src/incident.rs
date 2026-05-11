@@ -1,8 +1,9 @@
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::PathBuf;
 
 use serde::Serialize;
+use tokio::io::AsyncWriteExt;
+use tokio::sync::{mpsc, Mutex};
 use tracing::{info, warn};
 
 use crate::event::{Action, NormalizedEvent};
@@ -21,27 +22,32 @@ struct IncidentRecord {
     action:     String,
 }
 
+/// Append-only incident log. Writes are sent through a bounded channel to a
+/// dedicated writer task so callers never block on disk I/O.
 pub struct IncidentLogger {
-    path: PathBuf,
+    tx: Mutex<Option<mpsc::Sender<String>>>,
 }
 
 impl IncidentLogger {
     pub fn new(path: Option<&str>) -> Self {
         let path = PathBuf::from(path.unwrap_or(DEFAULT_INCIDENT_PATH));
 
-        // Ensure parent directory exists
         if let Some(parent) = path.parent() {
             if let Err(e) = fs::create_dir_all(parent) {
                 warn!("Could not create incident log directory {:?}: {}", parent, e);
             }
         }
 
+        let (tx, rx) = mpsc::channel::<String>(1024);
+        tokio::spawn(writer_task(path.clone(), rx));
+
         info!("Incident logger initialized: {}", path.display());
-        Self { path }
+        Self { tx: Mutex::new(Some(tx)) }
     }
 
-    /// Record an incident if the event is Blocked or Alerted.
-    /// Returns true if an incident was recorded.
+    /// Queue an incident if the event is Blocked / Alerted / Killed.
+    /// Returns true if the event was queued (or didn't need to be), false on
+    /// serialization failure or queue overflow.
     pub fn record(&self, event: &NormalizedEvent) -> bool {
         if !matches!(event.action, Action::Blocked | Action::Alerted | Action::Killed) {
             return false;
@@ -66,26 +72,45 @@ impl IncidentLogger {
             action:     format!("{:?}", event.action),
         };
 
-        match serde_json::to_string(&record) {
-            Ok(json) => {
-                match OpenOptions::new().create(true).append(true).open(&self.path) {
-                    Ok(mut file) => {
-                        if let Err(e) = writeln!(file, "{}", json) {
-                            warn!("Failed to write incident: {}", e);
-                            return false;
-                        }
-                        true
-                    }
-                    Err(e) => {
-                        warn!("Failed to open incident file {}: {}", self.path.display(), e);
-                        false
-                    }
+        let json = match serde_json::to_string(&record) {
+            Ok(j)  => j,
+            Err(e) => { warn!("Failed to serialize incident: {}", e); return false; }
+        };
+
+        // Non-blocking send. If the writer is backlogged, drop rather than
+        // stall the pipeline — losing audit lines is better than dropping
+        // live events.
+        if let Ok(guard) = self.tx.try_lock() {
+            if let Some(tx) = guard.as_ref() {
+                if tx.try_send(json).is_err() {
+                    warn!("Incident writer backlogged; dropping line");
+                    return false;
                 }
             }
-            Err(e) => {
-                warn!("Failed to serialize incident: {}", e);
-                false
-            }
         }
+        true
+    }
+}
+
+async fn writer_task(path: PathBuf, mut rx: mpsc::Receiver<String>) {
+    let mut file = match tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .await
+    {
+        Ok(f)  => f,
+        Err(e) => {
+            warn!("Failed to open incident file {}: {}", path.display(), e);
+            return;
+        }
+    };
+
+    while let Some(line) = rx.recv().await {
+        if let Err(e) = file.write_all(line.as_bytes()).await {
+            warn!("Incident write failed: {}", e);
+            continue;
+        }
+        let _ = file.write_all(b"\n").await;
     }
 }

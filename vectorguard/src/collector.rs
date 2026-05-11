@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use aya::{maps::RingBuf, programs::{Lsm, TracePoint}, Ebpf};
 use std::{
-    net::Ipv4Addr,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
     sync::atomic::{AtomicU64, Ordering},
 };
 use tokio::io::unix::AsyncFd;
@@ -122,13 +122,19 @@ fn parse_raw_event(data: &[u8]) -> Result<NormalizedEvent> {
 
     let raw = unsafe { &*(data.as_ptr() as *const RawEvent) };
 
+    let args = if raw.kind == EventKind::Exec {
+        extract_argv(unsafe { &raw.payload.exec.argv })
+    } else {
+        Vec::new()
+    };
+
     let process = ProcessInfo {
         pid:    raw.pid,
         ppid:   raw.ppid,
         uid:    raw.uid,
         gid:    raw.gid,
         binary: raw.comm_str().to_string(),
-        args:   vec![],
+        args,
         cwd:    String::new(),
     };
 
@@ -196,17 +202,21 @@ fn parse_event_type(raw: &RawEvent) -> Result<(EventType, Severity)> {
         }
 
         EventKind::NetConnect => {
-            let (dst_ip, dst_port) = unsafe {
-                let p = &raw.payload.net;
-                let ip = Ipv4Addr::from(u32::from_be(p.dst_ip));
-                (ip, p.dst_port)
+            let p = unsafe { &raw.payload.net };
+            let remote_ip = match p.family {
+                4 => {
+                    let a = p.dst_addr;
+                    IpAddr::V4(Ipv4Addr::new(a[0], a[1], a[2], a[3]))
+                }
+                6 => IpAddr::V6(Ipv6Addr::from(p.dst_addr)),
+                _ => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             };
 
             Ok((
                 EventType::Network {
                     direction: Direction::Outbound,
-                    remote_ip: std::net::IpAddr::V4(dst_ip),
-                    port:      dst_port,
+                    remote_ip,
+                    port:      p.dst_port,
                     proto:     Proto::Tcp,
                 },
                 Severity::Info,
@@ -220,6 +230,19 @@ fn parse_event_type(raw: &RawEvent) -> Result<(EventType, Severity)> {
             },
             Severity::High,
         )),
+    }
+}
+
+/// Extract argv[1] from the 512-byte eBPF buffer. The eBPF program writes
+/// a single NUL-terminated argument (argv[1]) starting at offset 0.
+fn extract_argv(buf: &[u8; 512]) -> Vec<String> {
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    if end == 0 {
+        return Vec::new();
+    }
+    match std::str::from_utf8(&buf[..end]) {
+        Ok(s)  => vec![s.to_string()],
+        Err(_) => Vec::new(),
     }
 }
 

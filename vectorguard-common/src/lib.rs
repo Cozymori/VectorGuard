@@ -66,10 +66,12 @@ pub struct FilePayload {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct NetPayload {
-    pub dst_ip:   u32,         // IPv4 big-endian
     pub dst_port: u16,
     pub proto:    u8,          // 6=TCP, 17=UDP
-    pub _pad:     u8,
+    pub family:   u8,          // 4 = AF_INET, 6 = AF_INET6
+    /// Destination address. IPv4 occupies the first 4 bytes (network order);
+    /// IPv6 uses all 16 bytes.
+    pub dst_addr: [u8; 16],
 }
 
 #[repr(C)]

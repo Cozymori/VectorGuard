@@ -25,6 +25,7 @@ static BLOCKED_PORTS: HashMap<u16, u8> = HashMap::with_max_entries(256, 0);
 #[map]
 static BLOCKED_UIDS: HashMap<u32, u8> = HashMap::with_max_entries(256, 0);
 
+
 #[inline(always)]
 fn comm_is_blocked(comm: &[u8; 16]) -> bool {
     unsafe { BLOCKED_COMMS.get(comm).is_some() }
@@ -89,15 +90,20 @@ fn try_handle_exec(ctx: &TracePointContext) -> Result<u32, i64> {
         (*event).blocked   = if should_block { 1 } else { 0 };
 
         fill_comm(event, &comm16);
+        zero_exec_payload(event);
 
-        // Read exec filename from tracepoint args
-        // sys_enter_execve format: offset 16 = filename pointer
+        // sys_enter_execve args: filename (16), argv (24), envp (32)
         if let Ok(filename_ptr) = ctx.read_at::<u64>(16) {
             if filename_ptr != 0 {
                 let _ = bpf_probe_read_user_str_bytes(
                     filename_ptr as *const u8,
                     &mut (*event).payload.exec.filename,
                 );
+            }
+        }
+        if let Ok(argv_ptr) = ctx.read_at::<u64>(24) {
+            if argv_ptr != 0 {
+                fill_argv(event, argv_ptr);
             }
         }
     }
@@ -109,6 +115,39 @@ fn try_handle_exec(ctx: &TracePointContext) -> Result<u32, i64> {
     }
 
     Ok(0)
+}
+
+#[inline(always)]
+unsafe fn zero_exec_payload(event: *mut RawEvent) {
+    unsafe {
+        let mut k = 0usize;
+        while k < 256 { (*event).payload.exec.filename[k] = 0; k += 1; }
+        let mut k = 0usize;
+        while k < 512 { (*event).payload.exec.argv[k] = 0; k += 1; }
+    }
+}
+
+/// Read argv[1] into the event's argv buffer (argv[0] duplicates filename).
+/// Reading only one argument keeps the eBPF program simple and verifier-
+/// friendly. argv[1] alone is enough for typical signals like a URL passed
+/// to wget or the first token of `sh -c "<cmd>"`.
+#[inline(always)]
+unsafe fn fill_argv(event: *mut RawEvent, argv_ptr: u64) {
+    unsafe {
+        let mut ptr_buf = [0u8; 8];
+        let p_addr = argv_ptr + 8;
+        if bpf_probe_read_user_buf(p_addr as *const u8, &mut ptr_buf).is_err() {
+            return;
+        }
+        let arg_ptr = u64::from_ne_bytes(ptr_buf);
+        if arg_ptr == 0 {
+            return;
+        }
+        let _ = bpf_probe_read_user_str_bytes(
+            arg_ptr as *const u8,
+            &mut (*event).payload.exec.argv,
+        );
+    }
 }
 
 // ── File open handler ──
@@ -193,8 +232,9 @@ fn try_handle_net_connect(ctx: &TracePointContext) -> Result<u32, i64> {
         return Ok(0);
     }
 
-    // Read sockaddr_in from userspace (fixed-length, not string)
-    let mut sa_buf = [0u8; 16];
+    // Read the larger sockaddr_in6 (28 bytes); sockaddr_in (16) fits in the
+    // same buffer and we'll only read the v4 prefix when family == AF_INET.
+    let mut sa_buf = [0u8; 28];
     unsafe {
         if bpf_probe_read_user_buf(addr_ptr as *const u8, &mut sa_buf).is_err() {
             return Ok(0);
@@ -202,13 +242,28 @@ fn try_handle_net_connect(ctx: &TracePointContext) -> Result<u32, i64> {
     }
 
     let family = u16::from_ne_bytes([sa_buf[0], sa_buf[1]]);
-    // AF_INET = 2
-    if family != 2 {
-        return Ok(0);
-    }
-
     let dst_port = u16::from_be_bytes([sa_buf[2], sa_buf[3]]);
-    let dst_ip = u32::from_ne_bytes([sa_buf[4], sa_buf[5], sa_buf[6], sa_buf[7]]);
+    let mut dst_addr = [0u8; 16];
+    let family_byte: u8 = match family {
+        2 => {
+            // sockaddr_in: addr at offset 4..8
+            dst_addr[0] = sa_buf[4];
+            dst_addr[1] = sa_buf[5];
+            dst_addr[2] = sa_buf[6];
+            dst_addr[3] = sa_buf[7];
+            4
+        }
+        10 => {
+            // sockaddr_in6: sin6_addr at offset 8..24
+            let mut i = 0usize;
+            while i < 16 {
+                dst_addr[i] = sa_buf[8 + i];
+                i += 1;
+            }
+            6
+        }
+        _ => return Ok(0),
+    };
 
     let should_block = unsafe { BLOCKED_PORTS.get(&dst_port).is_some() };
 
@@ -230,9 +285,14 @@ fn try_handle_net_connect(ctx: &TracePointContext) -> Result<u32, i64> {
 
         fill_comm(event, &comm16);
 
-        (*event).payload.net.dst_ip   = dst_ip;
         (*event).payload.net.dst_port = dst_port;
         (*event).payload.net.proto    = 6; // TCP
+        (*event).payload.net.family   = family_byte;
+        let mut i = 0usize;
+        while i < 16 {
+            (*event).payload.net.dst_addr[i] = dst_addr[i];
+            i += 1;
+        }
     }
 
     entry.submit(0);
@@ -244,11 +304,34 @@ fn try_handle_net_connect(ctx: &TracePointContext) -> Result<u32, i64> {
     Ok(0)
 }
 
+/// Preventive exec block. Runs at `bprm_check_security` (after the new
+/// binary is resolved, before its address space is installed) and denies
+/// the call when the caller's comm or UID is in our blocklists.
+///
+/// Returns `-EPERM` (-1) to abort the syscall. Unlike the tracepoint
+/// SIGKILL path, the original process survives — execve just fails with
+/// EPERM.
 #[lsm(hook = "bprm_check_security")]
 pub fn lsm_exec(_ctx: LsmContext) -> i32 {
+    let comm16 = get_comm();
+    if comm_is_blocked(&comm16) {
+        return -1;
+    }
+    let uid_gid = bpf_get_current_uid_gid();
+    let uid = (uid_gid & 0xFFFF_FFFF) as u32;
+    if uid_is_blocked(uid) {
+        return -1;
+    }
     0
 }
 
+/// Preventive file_open block placeholder.
+///
+/// Real path-prefix blocking requires resolving the file's path or inode
+/// inside the kernel. aya-ebpf 0.1.0 does not expose `bpf_d_path` through
+/// its high-level API, and reading `struct file` fields without BTF/CO-RE
+/// is brittle across kernels. Until we add raw helper bindings, path-based
+/// blocking remains detect-and-kill via the openat tracepoint.
 #[lsm(hook = "file_open")]
 pub fn lsm_file_open(_ctx: LsmContext) -> i32 {
     0

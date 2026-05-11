@@ -13,7 +13,7 @@
 
 use anyhow::{Context, Result};
 use aya::{maps::HashMap as AyaHashMap, Ebpf};
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::fast_path::rules::{Rule, RuleAction};
 
@@ -80,37 +80,6 @@ impl Enforcer {
             n_comms, n_ports, n_uids
         );
         Ok(())
-    }
-
-    /// Block a specific process name immediately (e.g. after slow path anomaly).
-    #[allow(dead_code)]
-    pub fn block_comm(&mut self, comm: &str) {
-        let key = comm_key(comm);
-        if let Err(e) = self.comms.insert(key, 1u8, 0) {
-            warn!("Failed to block comm '{}': {}", comm, e);
-        } else {
-            info!("Enforcer: blocked comm '{}'", comm);
-        }
-    }
-
-    /// Block a specific UID immediately.
-    #[allow(dead_code)]
-    pub fn block_uid(&mut self, uid: u32) {
-        if let Err(e) = self.uids.insert(uid, 1u8, 0) {
-            warn!("Failed to block uid {}: {}", uid, e);
-        } else {
-            info!("Enforcer: blocked uid {}", uid);
-        }
-    }
-
-    /// Block a destination port immediately.
-    #[allow(dead_code)]
-    pub fn block_port(&mut self, port: u16) {
-        if let Err(e) = self.ports.insert(port, 1u8, 0) {
-            warn!("Failed to block port {}: {}", port, e);
-        } else {
-            info!("Enforcer: blocked port {}", port);
-        }
     }
 
     fn clear(&mut self) -> Result<()> {

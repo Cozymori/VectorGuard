@@ -114,3 +114,98 @@ async fn writer_task(path: PathBuf, mut rx: mpsc::Receiver<String>) {
         let _ = file.write_all(b"\n").await;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::*;
+    use std::time::Duration;
+
+    fn make_event(action: Action, binary: &str, rule: Option<&str>) -> NormalizedEvent {
+        NormalizedEvent {
+            id: 1,
+            timestamp: 1234,
+            source: EventSource::NativeEbpf,
+            process: ProcessInfo {
+                pid: 42, ppid: 1, uid: 1000, gid: 1000,
+                binary: binary.to_string(),
+                args: vec![], cwd: String::new(),
+            },
+            parent: None,
+            event_type: EventType::Exec,
+            severity: Severity::High,
+            action,
+            rule_name: rule.map(String::from),
+            k8s: None,
+            raw: serde_json::Value::Null,
+        }
+    }
+
+    #[tokio::test]
+    async fn skips_allowed_events() {
+        let tmp = tempfile_path("vg-incident-allowed");
+        let logger = IncidentLogger::new(Some(tmp.to_str().unwrap()));
+        let ev = make_event(Action::Allowed, "ls", None);
+        assert_eq!(logger.record(&ev), false);
+    }
+
+    #[tokio::test]
+    async fn skips_logged_events() {
+        let tmp = tempfile_path("vg-incident-logged");
+        let logger = IncidentLogger::new(Some(tmp.to_str().unwrap()));
+        let ev = make_event(Action::Logged, "curl", Some("log-curl"));
+        assert_eq!(logger.record(&ev), false);
+    }
+
+    #[tokio::test]
+    async fn writes_blocked_event_to_file() {
+        let tmp = tempfile_path("vg-incident-blocked");
+        {
+            let logger = IncidentLogger::new(Some(tmp.to_str().unwrap()));
+            let ev = make_event(Action::Blocked, "nc", Some("block-nc"));
+            assert!(logger.record(&ev));
+            // Allow the async writer task to flush.
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        }
+        let contents = std::fs::read_to_string(&tmp).unwrap();
+        assert!(contents.contains("\"action\":\"Blocked\""), "{}", contents);
+        assert!(contents.contains("\"rule\":\"block-nc\""), "{}", contents);
+        assert!(contents.contains("\"binary\":\"nc\""), "{}", contents);
+        assert!(contents.contains("\"pid\":42"), "{}", contents);
+        assert!(contents.ends_with('\n'));
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[tokio::test]
+    async fn includes_event_type_detail() {
+        let tmp = tempfile_path("vg-incident-detail");
+        {
+            let logger = IncidentLogger::new(Some(tmp.to_str().unwrap()));
+            let mut ev = make_event(Action::Alerted, "cat", Some("alert-shadow"));
+            ev.event_type = EventType::FileAccess {
+                path: "/etc/shadow".into(),
+                flags: FileFlags { read: true, write: false, execute: false },
+            };
+            assert!(logger.record(&ev));
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        }
+        let contents = std::fs::read_to_string(&tmp).unwrap();
+        assert!(
+            contents.contains("\"event_type\":\"FileAccess:/etc/shadow\""),
+            "{}", contents
+        );
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    fn tempfile_path(label: &str) -> std::path::PathBuf {
+        let name = format!(
+            "{}-{}.jsonl",
+            label,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        );
+        std::env::temp_dir().join(name)
+    }
+}

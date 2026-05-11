@@ -311,3 +311,130 @@ impl AiAdvisor {
         result
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::*;
+
+    fn evt(event_type: EventType, action: Action, binary: &str) -> NormalizedEvent {
+        NormalizedEvent {
+            id: 0,
+            timestamp: 0,
+            source: EventSource::NativeEbpf,
+            process: ProcessInfo {
+                pid: 1, ppid: 0, uid: 0, gid: 0,
+                binary: binary.into(),
+                args: vec![], cwd: String::new(),
+            },
+            parent: None,
+            event_type,
+            severity: Severity::High,
+            action,
+            rule_name: None,
+            k8s: None,
+            raw: serde_json::Value::Null,
+        }
+    }
+
+    // ── extract_toml ─────────────────────────────────────────
+
+    #[test]
+    fn extract_toml_handles_fenced_block() {
+        let resp = "Here's the rule:\n```toml\n[[rules]]\nname = \"x\"\n```\n";
+        let out = AiAdvisor::extract_toml(resp);
+        assert!(out.contains("[[rules]]"));
+        assert!(out.contains("name = \"x\""));
+        assert!(!out.contains("```"));
+    }
+
+    #[test]
+    fn extract_toml_falls_back_to_raw_rules() {
+        let resp = "[[rules]]\nname = \"y\"\naction = \"alert\"\n";
+        let out = AiAdvisor::extract_toml(resp);
+        assert!(out.contains("[[rules]]"));
+        assert!(out.contains("name = \"y\""));
+    }
+
+    #[test]
+    fn extract_toml_returns_empty_when_no_rule_marker() {
+        let resp = "Sorry, I cannot help with that.";
+        let out = AiAdvisor::extract_toml(resp);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn extract_toml_concatenates_multiple_fenced_blocks() {
+        let resp = "First:\n```toml\n[[rules]]\nname = \"a\"\n```\nSecond:\n```toml\n[[rules]]\nname = \"b\"\n```\n";
+        let out = AiAdvisor::extract_toml(resp);
+        assert!(out.contains("name = \"a\""));
+        assert!(out.contains("name = \"b\""));
+    }
+
+    #[test]
+    fn extract_toml_block_at_end() {
+        let resp = "Analysis: pattern looks like reverse shell.\n```toml\n[[rules]]\nname = \"rs\"\n```";
+        let out = AiAdvisor::extract_toml(resp);
+        assert!(out.contains("name = \"rs\""));
+    }
+
+    // ── pattern_key ──────────────────────────────────────────
+
+    #[test]
+    fn pattern_key_file_access_uses_path() {
+        let ev = evt(
+            EventType::FileAccess {
+                path: "/etc/shadow".into(),
+                flags: FileFlags { read: true, write: false, execute: false },
+            },
+            Action::Blocked,
+            "cat",
+        );
+        let k = AiAdvisor::pattern_key(&ev).expect("key");
+        assert_eq!(k.binary, "cat");
+        assert_eq!(k.detail, "/etc/shadow");
+        assert_eq!(k.action, "Blocked");
+    }
+
+    #[test]
+    fn pattern_key_network_uses_port() {
+        let ev = evt(
+            EventType::Network {
+                direction: Direction::Outbound,
+                remote_ip: "1.2.3.4".parse().unwrap(),
+                port: 4444,
+                proto: Proto::Tcp,
+            },
+            Action::Alerted,
+            "curl",
+        );
+        let k = AiAdvisor::pattern_key(&ev).expect("key");
+        assert_eq!(k.detail, "4444");
+    }
+
+    #[test]
+    fn pattern_key_exec_uses_binary() {
+        let ev = evt(EventType::Exec, Action::Alerted, "bash");
+        let k = AiAdvisor::pattern_key(&ev).expect("key");
+        assert_eq!(k.detail, "bash");
+    }
+
+    #[test]
+    fn pattern_key_unsupported_types_return_none() {
+        let ev = evt(
+            EventType::Signal { signum: 9, target_pid: 42 },
+            Action::Alerted,
+            "kill",
+        );
+        assert!(AiAdvisor::pattern_key(&ev).is_none());
+    }
+
+    #[test]
+    fn pattern_key_distinguishes_actions() {
+        let blocked = evt(EventType::Exec, Action::Blocked, "x");
+        let alerted = evt(EventType::Exec, Action::Alerted, "x");
+        let b = AiAdvisor::pattern_key(&blocked).unwrap();
+        let a = AiAdvisor::pattern_key(&alerted).unwrap();
+        assert_ne!(b, a);
+    }
+}

@@ -131,6 +131,71 @@ fn stable_id(s: &str) -> u64 {
     h
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unit_norm(v: &[f32]) -> f32 {
+        v.iter().map(|x| x * x).sum::<f32>().sqrt()
+    }
+
+    // ── stable_id ────────────────────────────────────────────
+
+    #[test]
+    fn stable_id_is_deterministic() {
+        assert_eq!(stable_id("nginx"), stable_id("nginx"));
+        assert_eq!(stable_id(""), stable_id(""));
+    }
+
+    #[test]
+    fn stable_id_differs_across_inputs() {
+        assert_ne!(stable_id("nginx"), stable_id("apache2"));
+        assert_ne!(stable_id("sh"), stable_id("sH"));
+    }
+
+    #[test]
+    fn stable_id_known_fnv1a_value() {
+        // FNV-1a("") = 0xcbf29ce484222325 (offset basis itself)
+        assert_eq!(stable_id(""), 0xcbf2_9ce4_8422_2325);
+    }
+
+    // ── blend ────────────────────────────────────────────────
+
+    #[test]
+    fn blend_returns_a_when_dims_mismatch() {
+        let a = vec![1.0_f32, 0.0, 0.0];
+        let b = vec![0.0_f32, 1.0];
+        let out = blend(&a, &b);
+        assert_eq!(out, a);
+    }
+
+    #[test]
+    fn blend_output_is_unit_normalized() {
+        let a = vec![1.0_f32, 0.0, 0.0, 0.0];
+        let b = vec![0.0_f32, 1.0, 0.0, 0.0];
+        let out = blend(&a, &b);
+        let n = unit_norm(&out);
+        assert!((n - 1.0).abs() < 1e-5, "norm = {}", n);
+    }
+
+    #[test]
+    fn blend_weights_a_more_than_b() {
+        // With alpha=0.7, a's component should outweigh b's.
+        let a = vec![1.0_f32, 0.0, 0.0, 0.0];
+        let b = vec![0.0_f32, 1.0, 0.0, 0.0];
+        let out = blend(&a, &b);
+        assert!(out[0] > out[1], "expected a-axis dominant: {:?}", out);
+    }
+
+    #[test]
+    fn blend_zero_vectors_does_not_nan() {
+        let a = vec![0.0_f32; 4];
+        let b = vec![0.0_f32; 4];
+        let out = blend(&a, &b);
+        assert!(out.iter().all(|x| x.is_finite()));
+    }
+}
+
 /// Linearly blend two unit vectors and re-normalize the result.
 /// If dimensions mismatch, logs a warning and returns `a` unchanged.
 fn blend(a: &[f32], b: &[f32]) -> Vec<f32> {

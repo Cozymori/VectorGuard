@@ -105,14 +105,30 @@ impl SlowPath {
             }
         }
 
-        // Store context-blended vector as baseline for future comparisons
+        // Store context-blended vector as baseline for future comparisons.
+        // Using a deterministic hash of the binary name as the point ID keeps
+        // the collection bounded by the number of distinct binaries on the
+        // host: each upsert overwrites that binary's most recent baseline.
         let payload = serde_json::json!({
-            "pid":    event.process.pid,
             "binary": event.process.binary,
             "ts":     event.timestamp,
         });
-        let _ = self.vectordb.upsert(event.id, search_vector, payload).await;
+        let point_id = stable_id(&event.process.binary);
+        let _ = self.vectordb.upsert(point_id, search_vector, payload).await;
     }
+}
+
+/// Deterministic 64-bit hash (FNV-1a) so Qdrant point IDs stay stable
+/// across process restarts and overwrite cleanly.
+fn stable_id(s: &str) -> u64 {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x100_0000_01b3;
+    let mut h = FNV_OFFSET_BASIS;
+    for b in s.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(FNV_PRIME);
+    }
+    h
 }
 
 /// Linearly blend two unit vectors and re-normalize the result.

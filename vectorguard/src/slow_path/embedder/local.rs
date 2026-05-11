@@ -6,6 +6,12 @@ use super::EmbedProvider;
 const LOCAL_DIM: usize = 64;
 
 // ── Deterministic Local Embedder (no external API) ───────────
+//
+// WARNING: this embedder is a deterministic byte-position hash with no
+// learned semantic structure. Identical event metadata produces identical
+// vectors, and small textual differences produce nearly-random ones, so
+// cosine similarity here behaves like a fuzzy novelty cache rather than
+// real anomaly detection. Prefer Ollama or a hosted backend for production.
 
 pub struct LocalEmbedder;
 

@@ -79,6 +79,7 @@ async fn main() -> Result<()> {
 
     // ── Config Reload Broadcast Channel ──────────────────────────
     let (reload_tx, reload_rx) = watch::channel(cfg.clone());
+    let slow_reload_rx = reload_tx.subscribe();
 
     // ── Hot Reload ────────────────────────────────────────────────
     if cfg.system.hot_reload {
@@ -156,16 +157,25 @@ async fn main() -> Result<()> {
         cfg.fast_path.rules_path.clone(),
     );
 
+    // ── Slow Path Worker Task ─────────────────────────────────────
+    // The pipeline best-effort forwards events here via try_send. If the
+    // worker is backlogged on Qdrant, events are dropped from anomaly
+    // detection rather than back-pressuring the main pipeline.
+    let (slow_tx, slow_rx) = mpsc::channel::<NormalizedEvent>(1024);
+    tokio::spawn(run_slow_worker(
+        slow_rx, slow_path, incident_logger.clone(), slow_reload_rx,
+    ));
+
     // ── Event Processing Pipeline Task ────────────────────────────
     #[cfg(target_os = "linux")]
     tokio::spawn(run_pipeline(
-        raw_rx, proc_tx, scope_filter, fast_path, slow_path,
+        raw_rx, proc_tx, slow_tx, scope_filter, fast_path,
         incident_logger.clone(), ai_advisor, reload_rx, Some(enf_shared),
     ));
 
     #[cfg(not(target_os = "linux"))]
     tokio::spawn(run_pipeline(
-        raw_rx, proc_tx, scope_filter, fast_path, slow_path,
+        raw_rx, proc_tx, slow_tx, scope_filter, fast_path,
         incident_logger.clone(), ai_advisor, reload_rx, None,
     ));
 
@@ -188,12 +198,16 @@ async fn main() -> Result<()> {
 }
 
 /// Event processing pipeline with live hot-reload support.
+///
+/// Synchronous (fast) stages run inline: scope → fast_path → incident logging
+/// → ai_advisor. Anomaly detection runs in a separate worker (see
+/// `run_slow_worker`) and is fed best-effort via `slow_tx.try_send`.
 async fn run_pipeline(
     raw_rx:               mpsc::Receiver<NormalizedEvent>,
     proc_tx:              mpsc::Sender<NormalizedEvent>,
+    slow_tx:              mpsc::Sender<NormalizedEvent>,
     mut scope_filter:     scope::ScopeFilter,
     mut fast_path:        fast_path::FastPath,
-    mut slow_path:        slow_path::SlowPath,
     incident_logger:      Arc<incident::IncidentLogger>,
     mut ai_advisor:       ai_advisor::AiAdvisor,
     mut reload_rx:        watch::Receiver<config::Config>,
@@ -205,6 +219,7 @@ async fn run_pipeline(
     // Wrap in Option so we can park (pending) the arm when the source closes,
     // keeping the pipeline alive for hot-reload events even if eBPF failed.
     let mut raw_rx_opt: Option<mpsc::Receiver<NormalizedEvent>> = Some(raw_rx);
+    let mut slow_drops: u64 = 0;
 
     loop {
         tokio::select! {
@@ -228,9 +243,21 @@ async fn run_pipeline(
                         }
 
                         fast_path.evaluate(&mut ev);
-                        slow_path.analyze(&mut ev).await;
                         incident_logger.record(&ev);
                         ai_advisor.analyze(&ev).await;
+
+                        // Fork a copy to the slow path worker. try_send is
+                        // non-blocking: when the worker is backlogged on
+                        // Qdrant, drop the analysis instead of stalling.
+                        if slow_tx.try_send(ev.clone()).is_err() {
+                            slow_drops = slow_drops.saturating_add(1);
+                            if slow_drops.is_power_of_two() {
+                                tracing::warn!(
+                                    "slow_path worker backlogged; dropped {} events so far",
+                                    slow_drops
+                                );
+                            }
+                        }
 
                         if proc_tx.send(ev).await.is_err() {
                             break;
@@ -245,7 +272,6 @@ async fn run_pipeline(
 
                 scope_filter = scope::ScopeFilter::new(&new_cfg.scope);
                 fast_path    = fast_path::FastPath::new(&new_cfg.fast_path);
-                slow_path    = slow_path::SlowPath::new(&new_cfg.slow_path).await;
                 ai_advisor.update_config(new_cfg.ai_advisor.clone());
 
                 #[cfg(target_os = "linux")]
@@ -258,6 +284,37 @@ async fn run_pipeline(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/// Slow path worker: runs anomaly detection on every event the main pipeline
+/// forwards. Escalations produce a separate incident record (the original
+/// event already left the pipeline with its fast-path decision).
+async fn run_slow_worker(
+    mut slow_rx:    mpsc::Receiver<NormalizedEvent>,
+    mut slow_path:  slow_path::SlowPath,
+    incident_logger: Arc<incident::IncidentLogger>,
+    mut reload_rx:  watch::Receiver<config::Config>,
+) {
+    loop {
+        tokio::select! {
+            ev = slow_rx.recv() => {
+                match ev {
+                    None => break,
+                    Some(mut ev) => {
+                        let prior = ev.action.clone();
+                        slow_path.analyze(&mut ev).await;
+                        if ev.action != prior {
+                            incident_logger.record(&ev);
+                        }
+                    }
+                }
+            }
+            Ok(()) = reload_rx.changed() => {
+                let new_cfg = reload_rx.borrow().clone();
+                slow_path = slow_path::SlowPath::new(&new_cfg.slow_path).await;
             }
         }
     }

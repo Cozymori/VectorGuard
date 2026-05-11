@@ -41,6 +41,11 @@ time_window_secs = 60
 similarity_threshold = 0.85
 
 [slow_path.embedder]
+# backend = "local" is a deterministic byte-hash with no semantic structure —
+# it produces identical vectors for identical metadata and is essentially a
+# novelty cache, not real anomaly detection. Use it only for offline/dev
+# runs. For meaningful detection, point "local" at an Ollama endpoint or
+# use one of the hosted backends below.
 backend = "local"          # local | openai | voyage | gemini
 model = "nomic-embed-text"
 api_key_env = ""
@@ -60,12 +65,13 @@ collection = "behaviors"
 # ── AI Rule Advisor ──────────────────────────────────────────
 [ai_advisor]
 enabled              = false
-api_key              = ""          # OpenAI API key (sk-...)
-model                = "gpt-4o"   # gpt-4o | gpt-4o-mini | gpt-4-turbo
-trigger_threshold    = 3           # same pattern N times → call AI
-cooldown_seconds     = 300         # min gap between API calls per pattern
-context_window_size  = 20          # recent events sent as context
-window_secs          = 60          # sliding window duration
+provider             = "anthropic"           # anthropic | openai
+api_key_env          = "ANTHROPIC_API_KEY"   # env var holding the key (never put plaintext keys here)
+model                = "claude-sonnet-4-6"  # anthropic: claude-sonnet-4-6 etc; openai: gpt-4o etc
+trigger_threshold    = 3                     # same pattern N times → call AI
+cooldown_seconds     = 300                   # min gap between API calls per pattern
+context_window_size  = 20                    # recent events sent as context
+window_secs          = 60                    # sliding window duration
 
 # ── TUI ─────────────────────────────────────────────────────
 [tui]

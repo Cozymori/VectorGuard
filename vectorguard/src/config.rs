@@ -162,7 +162,10 @@ pub enum VectorDbBackend {
 #[serde(default)]
 pub struct AiAdvisorConfig {
     pub enabled:             bool,
-    pub api_key:             String,
+    pub provider:            AiProvider,
+    /// Environment variable holding the API key (e.g. "ANTHROPIC_API_KEY").
+    /// Plaintext keys are never accepted; this keeps secrets out of config.toml.
+    pub api_key_env:         String,
     pub model:               String,
     pub trigger_threshold:   u32,
     pub cooldown_seconds:    u64,
@@ -170,11 +173,19 @@ pub struct AiAdvisorConfig {
     pub window_secs:         u64,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum AiProvider {
+    Anthropic,
+    Openai,
+}
+
 impl Default for AiAdvisorConfig {
     fn default() -> Self {
         Self {
             enabled:             false,
-            api_key:             String::new(),
+            provider:            AiProvider::Anthropic,
+            api_key_env:         String::new(),
             model:               String::new(),
             trigger_threshold:   3,
             cooldown_seconds:    300,

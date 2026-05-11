@@ -270,6 +270,7 @@ mod tests {
     fn combined_target_and_namespace() {
         let f = ScopeFilter::new(&ScopeConfig {
             targets:            vec!["nginx".into()],
+            exclude_processes:  vec![],
             include_namespaces: vec!["production".into()],
             exclude_namespaces: vec!["kube-system".into()],
             label_selectors:    vec![],

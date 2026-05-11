@@ -1,18 +1,3 @@
-#[cfg(target_os = "linux")]
-mod collector;
-#[cfg(target_os = "linux")]
-mod enforcer;
-mod ai_advisor;
-mod config;
-mod event;
-mod adapter;
-mod fast_path;
-mod hotreload;
-mod incident;
-mod scope;
-mod slow_path;
-mod tui;
-
 use anyhow::{Context, Result};
 #[cfg(target_os = "linux")]
 use std::sync::Mutex;
@@ -20,6 +5,12 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, watch, RwLock};
 use tracing::info;
 
+#[cfg(target_os = "linux")]
+use vectorguard::{collector, enforcer};
+use vectorguard::{
+    adapter, ai_advisor, config, event, fast_path, hotreload,
+    incident, scope, slow_path, tui,
+};
 use config::AdapterBackend;
 use event::NormalizedEvent;
 

@@ -2,7 +2,7 @@
 
 eBPF-based runtime security daemon for Linux.
 
-VectorGuard monitors syscalls in real time, evaluates them against a TOML rule engine, and detects unknown attack patterns through vector-database behavioral analysis. When a threat is confirmed, it blocks **at the kernel level** — no userspace round trip, just `bpf_send_signal(SIGKILL)`.
+VectorGuard monitors syscalls in real time, evaluates them against a TOML rule engine, and detects unknown attack patterns through vector-database behavioral analysis. Enforcement runs entirely in the kernel, with no userspace round-trip — see [Enforcement model](#enforcement-model) for what is blocked preventively vs detected and killed after the fact.
 
 ---
 
@@ -10,6 +10,7 @@ VectorGuard monitors syscalls in real time, evaluates them against a TOML rule e
 
 - [Features](#features)
 - [Architecture](#architecture)
+- [Enforcement model](#enforcement-model)
 - [Requirements](#requirements)
 - [Quick Start](#quick-start)
 - [Configuration](#configuration)
@@ -42,15 +43,23 @@ VectorGuard monitors syscalls in real time, evaluates them against a TOML rule e
 - Cosine similarity search in Qdrant — events with no nearby neighbor are flagged as anomalous
 
 ### Enforcement
-- Targets (process name / port / UID) are written to eBPF hash maps
-- On match, the tracepoint sends `bpf_send_signal(9)` — **immediate SIGKILL**
-- All kernel-side; no userspace round trip
+- Block targets (comm / UID / port) are written to eBPF hash maps
+- Comm- and UID-blocks: enforced **preventively** at the `bprm_check_security` LSM hook (returns `-EPERM`) when the kernel supports BPF LSM
+- Port- and path-blocks: enforced via tracepoint matching → `bpf_send_signal(SIGKILL)` after the syscall has entered the kernel
+- All kernel-side; no userspace round-trip
+- See [Enforcement model](#enforcement-model) for the per-rule preventive-vs-reactive matrix
 
 ### Adapters
 Beyond native eBPF, VectorGuard ingests events from:
 - **Tetragon** — gRPC streaming
 - **Falco** — JSON log tailing
 - **auditd** — `audit.log` parsing
+
+### AI rule advisor (optional)
+- When the same anomalous pattern recurs above a threshold, VectorGuard can call out to an LLM to propose new TOML rules
+- Pluggable provider: `anthropic` (default) or `openai`
+- Generated rules are written to `rules/ai-generated.toml` and picked up by hot reload
+- API keys are read from an environment variable — never stored in `config.toml`
 
 ### Other
 - **Kubernetes** — namespace and label filtering, DaemonSet / Helm deployment
@@ -91,8 +100,45 @@ Beyond native eBPF, VectorGuard ingests events from:
 
 Kernel-level enforcement (Linux ≥ 5.7):
   eBPF hash map ← Enforcer ← Fast Path block rules
-  Tracepoint sends bpf_send_signal(SIGKILL)
+  ├─ LSM bprm_check_security  → returns -EPERM   (preventive: comm / UID)
+  └─ Tracepoint               → bpf_send_signal  (reactive:  port / path)
 ```
+
+---
+
+## Enforcement model
+
+VectorGuard enforces in the kernel using **two distinct mechanisms** depending on which condition triggered a `block` rule.
+
+### Preventive block (LSM `-EPERM`)
+
+For comm-based and UID-based `block` rules, the `bprm_check_security` LSM hook is checked before exec replaces the process image. If the current task's comm or UID is in the blocklist, the hook returns `-EPERM`, the `execve` fails, and the original process continues running with `errno = EPERM`. The target binary never executes.
+
+Requires kernel ≥ 5.7 with `CONFIG_BPF_LSM=y`. Without LSM support, VectorGuard falls back to the reactive path for these rules.
+
+### Reactive block (tracepoint + SIGKILL)
+
+For port-based and path-based `block` rules, VectorGuard hooks the corresponding `sys_enter_*` tracepoint. On match, the eBPF program submits the event and calls `bpf_send_signal(SIGKILL)`. Important caveats:
+
+- The signal is asynchronous. The originating syscall typically completes before the kernel delivers the signal, so:
+  - `openat`: the file descriptor is returned to the caller. Its data may be read by the time the process dies.
+  - `connect`: the TCP SYN has been emitted; the remote peer sees the connection attempt.
+  - `execve`: address-space replacement may be partially complete.
+- The killed process is whatever called the syscall. Side effects on shared resources (audit logs, atime, etc.) persist.
+
+This mode is best understood as "**detect and immediately kill the offender**" rather than "deny the action."
+
+### Per-rule support matrix
+
+| Rule condition | Mechanism | Mode |
+|---|---|---|
+| `match_process` | LSM `bprm_check_security` | Preventive (`-EPERM`) |
+| `match_uid` | LSM `bprm_check_security` | Preventive (`-EPERM`) |
+| `match_port` | Tracepoint `sys_enter_connect` | Reactive (SIGKILL) |
+| `match_path_prefix` | Tracepoint `sys_enter_openat` | Reactive (SIGKILL) |
+| `match_exec_path` | Tracepoint `sys_enter_execve` | Reactive (SIGKILL) |
+
+Path-prefix preventive blocking is a known gap. Reconstructing the path inside an LSM hook requires `bpf_d_path()`, which the version of `aya-ebpf` we use does not yet expose through its high-level API. This is tracked as future work.
 
 ---
 
@@ -220,6 +266,16 @@ backend    = "qdrant"
 url        = "http://localhost:6333"
 collection = "behaviors"
 
+[ai_advisor]
+enabled             = false
+provider            = "anthropic"            # anthropic | openai
+api_key_env         = "ANTHROPIC_API_KEY"    # env var holding the key
+model               = "claude-sonnet-4-6"   # provider-specific model id
+trigger_threshold   = 3                      # same pattern N times → call LLM
+cooldown_seconds    = 300                    # min gap between calls per pattern
+context_window_size = 20                     # recent events sent as context
+window_secs         = 60                     # sliding window for pattern counting
+
 [tui]
 refresh_rate_ms = 200
 theme           = "dark"   # dark | light
@@ -250,7 +306,13 @@ Place `.toml` files in the `rules/` directory. Saved files are picked up immedia
 ### Evaluation model
 - Conditions within a rule are combined with **AND** (all must match)
 - Rules are evaluated in file order — **the first matching rule wins**
-- `block` rules are also pushed into the eBPF hash map for in-kernel enforcement
+- `block` rules are also pushed into the eBPF hash map for in-kernel enforcement (see [Enforcement model](#enforcement-model) for preventive vs reactive)
+
+### Actions
+- `block` — kernel-level enforcement, preventive (LSM `-EPERM`) when supported, reactive (SIGKILL) otherwise
+- `alert` — record an incident and tag the event as Alerted; no kernel enforcement
+- `log`  — record the event with action `Logged` but no incident and no severity escalation
+- `allow` — bypass any later rules with this event explicitly marked as allowed
 
 ### Available conditions
 
@@ -318,7 +380,11 @@ match_uid         = 1000
 
 ## Slow Path Anomaly Detection
 
-The Slow Path catches **unknown attack patterns** that no rule covers.
+The Slow Path runs out-of-band on a dedicated worker task and catches **unknown attack patterns** that no rule covers. It is best-effort: if Qdrant is slow, the main pipeline drops slow-path analysis rather than back-pressuring event collection.
+
+### Embedder choice matters
+
+The `local` embedder is a deterministic byte-position hash with no learned semantic structure. It is suitable for offline tests but is **not real anomaly detection** — for production, point `local` at an Ollama endpoint or use a hosted backend (OpenAI, Voyage, Gemini).
 
 ### How it works
 
@@ -339,7 +405,10 @@ event arrives
    no neighbor   (< 0.85) → anomaly → escalate to Alert
     │
     ▼
-4. Store — upsert the blended vector into Qdrant for future comparisons
+4. Store — upsert the blended vector into Qdrant using a hash of the
+   binary name as the point ID. Each binary keeps a single rolling
+   baseline; the collection size is bounded by the number of distinct
+   binaries on the host.
 ```
 
 ### Setting up Qdrant

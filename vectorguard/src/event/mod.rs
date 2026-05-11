@@ -54,7 +54,7 @@ pub enum Proto { Tcp, Udp, Unknown }
 pub enum Severity { Info, Low, Medium, High, Critical }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Action { Allowed, Blocked, Killed, Alerted }
+pub enum Action { Allowed, Logged, Blocked, Killed, Alerted }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct K8sMeta {

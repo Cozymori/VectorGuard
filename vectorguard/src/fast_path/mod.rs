@@ -17,10 +17,29 @@ impl FastPath {
         let ruleset = RuleSet::load_dir(&cfg.rules_path);
         tracing::info!("Fast Path rules loaded: {} rule(s)", ruleset.rules.len());
 
+        // The kernel exposes only 15 chars + NUL in task->comm, so longer
+        // process-name patterns can never block in-kernel and will only
+        // match in userspace against the truncated comm.
+        for r in &ruleset.rules {
+            for pat in &r.match_process {
+                let literal_len = pat.chars()
+                    .take_while(|c| !matches!(c, '*' | '?' | '['))
+                    .count();
+                if literal_len > 15 {
+                    tracing::warn!(
+                        "Rule '{}': match_process '{}' exceeds 15 chars; \
+                         kernel comm is truncated, so this rule's kernel block \
+                         will not fire",
+                        r.name, pat
+                    );
+                }
+            }
+        }
+
         let default_action = match cfg.default_action {
             DefaultAction::Block => Action::Blocked,
             DefaultAction::Alert => Action::Alerted,
-            DefaultAction::Log   => Action::Allowed,
+            DefaultAction::Log   => Action::Logged,
         };
 
         Self { ruleset, default_action, enabled: cfg.enabled }

@@ -50,7 +50,7 @@ impl RuleAction {
         match self {
             RuleAction::Block          => Action::Blocked,
             RuleAction::Alert          => Action::Alerted,
-            RuleAction::Log            => Action::Allowed,
+            RuleAction::Log            => Action::Logged,
             RuleAction::Allow          => Action::Allowed,
         }
     }
@@ -369,5 +369,22 @@ mod tests {
         };
         let result = rs.evaluate(&exec_event("bash"));
         assert_eq!(result, Some((Action::Blocked, "my-custom-rule".into())));
+    }
+
+    #[test]
+    fn log_action_maps_to_logged_not_allowed() {
+        let rs = RuleSet {
+            rules: vec![Rule {
+                name:              "log-curl".into(),
+                action:            RuleAction::Log,
+                match_process:     vec!["curl".into()],
+                match_path_prefix: vec![],
+                match_exec_path:   vec![],
+                match_port:        vec![],
+                match_uid:         None,
+            }],
+        };
+        let result = rs.evaluate(&exec_event("curl"));
+        assert_eq!(result.map(|(a, _)| a), Some(Action::Logged));
     }
 }

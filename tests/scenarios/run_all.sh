@@ -25,9 +25,13 @@ for script in "$SCRIPT_DIR"/cve_*.sh; do
     rc=$?
     echo "$output"
 
-    pass=$(grep -c '^\[PASS\]' <<<"$output" || true)
-    fail=$(grep -c '^\[FAIL\]' <<<"$output" || true)
-    warn=$(grep -c '^\[WARN\]' <<<"$output" || true)
+    # record_pass/fail/warn in lib.sh emit ANSI color codes before the
+    # tag, so the bracketed marker is not at column 0. Strip CSI sequences
+    # before counting.
+    plain=$(sed 's/\x1b\[[0-9;]*m//g' <<<"$output")
+    pass=$(grep -c '^\[PASS\]' <<<"$plain" || true)
+    fail=$(grep -c '^\[FAIL\]' <<<"$plain" || true)
+    warn=$(grep -c '^\[WARN\]' <<<"$plain" || true)
     TOTAL_PASS=$((TOTAL_PASS + pass))
     TOTAL_FAIL=$((TOTAL_FAIL + fail))
     TOTAL_WARN=$((TOTAL_WARN + warn))

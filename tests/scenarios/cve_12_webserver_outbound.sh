@@ -18,9 +18,10 @@ match_port    = [4444, 5555, 6666, 8888, 9999]
 
 start_vectorguard || exit 1
 
-(
-    exec -a nginx bash -c "exec 3<>/dev/tcp/127.0.0.1/8888"
-) 2>/dev/null || true
+# Real binary named "nginx" so the connect event's comm matches the rule.
+# bash's /dev/tcp triggers sys_enter_connect against port 8888.
+NGINX_BIN=$(make_named_binary nginx)
+"$NGINX_BIN" -c "exec 3<>/dev/tcp/127.0.0.1/8888" 2>/dev/null || true
 
 assert_action_for_rule "webserver-outbound-unusual" "Alerted" 6
 

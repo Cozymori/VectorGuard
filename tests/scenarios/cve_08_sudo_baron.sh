@@ -11,20 +11,22 @@ section "CVE-2021-3156 (sudo baron samedit): sudoedit exec"
 
 install_rule "sudoedit-exec" '
 [[rules]]
-name            = "sudoedit-exec"
-action          = "alert"
-match_exec_path = ["/usr/bin/sudoedit", "/usr/local/bin/sudoedit"]
+name          = "sudoedit-exec"
+action        = "alert"
+match_process = ["sudoedit"]
 '
 
 start_vectorguard || exit 1
 
+# Rule fires on events whose comm is "sudoedit". On hosts where sudoedit
+# is installed, the real binary works (kernel sets comm from basename).
+# Otherwise we fabricate one — match_process is comm-based, so the binary
+# does not need to be the real sudoedit.
 if [[ -x /usr/bin/sudoedit ]]; then
     /usr/bin/sudoedit --version >/dev/null 2>&1 || true
 else
-    # No sudoedit installed — fake an exec to /usr/bin/sudoedit by ln+run.
-    ln -sf "$(command -v true)" /tmp/sudoedit
-    /tmp/sudoedit 2>/dev/null || true
-    rm -f /tmp/sudoedit
+    SUDOEDIT_BIN=$(make_named_binary sudoedit /bin/true)
+    "$SUDOEDIT_BIN" 2>/dev/null || true
 fi
 
 assert_action_for_rule "sudoedit-exec" "Alerted" 6

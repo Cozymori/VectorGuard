@@ -16,15 +16,12 @@ match_process = ["xmrig", "minerd", "cpuminer", "ethminer"]
 
 start_vectorguard || exit 1
 
-# Plant a stub binary named "xmrig" that just exits, then run it so the
-# kernel comm is "xmrig".
-mkdir -p /tmp/vg-fake
-printf '#!/bin/sh\nexit 0\n' > /tmp/vg-fake/xmrig
-chmod +x /tmp/vg-fake/xmrig
-/tmp/vg-fake/xmrig 2>/dev/null || true
+# Plant a real binary named "xmrig" and run it so the kernel comm is
+# "xmrig". A shebang script would re-exec into /bin/sh and the resulting
+# process's comm would be "sh", not "xmrig".
+XMRIG_BIN=$(make_named_binary xmrig /bin/true)
+"$XMRIG_BIN" 2>/dev/null || true
 
 assert_action_for_rule "cryptominer-known-binaries" "Blocked" 6
-
-rm -rf /tmp/vg-fake
 
 scenario_summary "$0"

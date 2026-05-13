@@ -10,20 +10,18 @@ section "CVE-2021-44228 (Log4Shell): webserver shell exec"
 
 install_rule "log4shell-webserver-shell" '
 [[rules]]
-name            = "log4shell-webserver-shell"
-action          = "block"
-match_process   = ["java", "nginx", "apache2", "httpd"]
-match_exec_path = ["/bin/sh", "/bin/bash", "/bin/dash"]
+name          = "log4shell-webserver-shell"
+action        = "block"
+match_process = ["java", "nginx", "apache2", "httpd"]
 '
 
 start_vectorguard || exit 1
 
-# Simulate a JVM child execing /bin/sh. The simplest reproduction is to
-# bash-rename ourselves to "java" and exec /bin/sh. exec replaces the
-# process image, so we fork first.
-(
-    exec -a java bash -c "/bin/sh -c 'true'"
-) 2>/dev/null || true
+# Simulate a JVM exec'ing a shell. The kernel sets comm from the binary's
+# basename, so `exec -a java` is not enough — we need a real binary named
+# "java". make_named_binary copies bash to /tmp/java.
+JAVA_BIN=$(make_named_binary java)
+"$JAVA_BIN" -c "/bin/sh -c 'true'" 2>/dev/null || true
 
 assert_action_for_rule "log4shell-webserver-shell" "Blocked" 6
 

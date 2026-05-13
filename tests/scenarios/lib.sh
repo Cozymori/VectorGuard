@@ -33,12 +33,60 @@ section() {
 
 # ── VectorGuard lifecycle ────────────────────────────────────────
 
+# Move default.toml aside so only scenario-installed rules apply. This
+# prevents broad default rules (e.g. alert-suspicious-port covering ports
+# 4444/1337/...) from shadowing a scenario's narrower rule under
+# first-match-wins evaluation.
+disable_default_rules() {
+    if [[ -f "$VG_RULES_DIR/default.toml" ]]; then
+        mv "$VG_RULES_DIR/default.toml" "$VG_RULES_DIR/.default.toml.disabled"
+    fi
+}
+
+enable_default_rules() {
+    if [[ -f "$VG_RULES_DIR/.default.toml.disabled" ]]; then
+        mv "$VG_RULES_DIR/.default.toml.disabled" "$VG_RULES_DIR/default.toml"
+    fi
+}
+
+# Make a real binary at /tmp/<name> by copying /bin/bash (or any binary
+# given as the second argument), so exec'ing it sets the kernel's comm to
+# <name>. The kernel derives comm from the *basename* of the executed file
+# (truncated to 15 chars), so the file must be named exactly <name> — a
+# "scenario-<name>" prefix would produce comm="scenario-<name>".
+#
+# Used when a scenario wants to trigger rules that match on process name
+# (e.g. "java", "nginx", "pkexec") but the host has no such binary.
+# `exec -a` only rewrites argv[0] and does not change comm, so a real
+# file is required.
+#
+# Tracked in SCENARIO_NAMED_BINS so clean_exit can remove them.
+declare -a SCENARIO_NAMED_BINS=()
+make_named_binary() {
+    local name="$1"
+    local src="${2:-/bin/bash}"
+    local path="/tmp/$name"
+    cp "$src" "$path"
+    chmod +x "$path"
+    SCENARIO_NAMED_BINS+=("$path")
+    printf '%s\n' "$path"
+}
+
+cleanup_named_binaries() {
+    local p
+    for p in "${SCENARIO_NAMED_BINS[@]:-}"; do
+        [[ -n "$p" ]] && rm -f "$p"
+    done
+    SCENARIO_NAMED_BINS=()
+}
+
 # Start the daemon with whatever config is in place. Captures PID to file.
 start_vectorguard() {
     if [[ ! -x /usr/local/bin/vectorguard ]]; then
         record_fail "vectorguard binary not installed"
         return 1
     fi
+    disable_default_rules
     : > "$VG_LOG"
     RUST_LOG="${RUST_LOG:-info}" /usr/local/bin/vectorguard \
         --config "$VG_CONFIG" > "$VG_LOG" 2>&1 &
@@ -166,5 +214,7 @@ clean_exit() {
     local rc=$?
     stop_vectorguard
     cleanup_rules
+    cleanup_named_binaries
+    enable_default_rules
     exit "$rc"
 }

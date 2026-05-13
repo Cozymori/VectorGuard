@@ -161,16 +161,28 @@ pub enum VectorDbBackend {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AiAdvisorConfig {
-    pub enabled:             bool,
-    pub provider:            AiProvider,
+    pub enabled:              bool,
+    pub provider:             AiProvider,
     /// Environment variable holding the API key (e.g. "ANTHROPIC_API_KEY").
     /// Plaintext keys are never accepted; this keeps secrets out of config.toml.
-    pub api_key_env:         String,
-    pub model:               String,
-    pub trigger_threshold:   u32,
-    pub cooldown_seconds:    u64,
-    pub context_window_size: usize,
-    pub window_secs:         u64,
+    pub api_key_env:          String,
+    pub model:                String,
+    pub trigger_threshold:    u32,
+    pub cooldown_seconds:     u64,
+    pub context_window_size:  usize,
+    pub window_secs:          u64,
+    /// Maximum rules the LLM is asked to propose per fire. Responses exceeding
+    /// this are truncated before being staged.
+    pub max_rules_per_fire:   usize,
+    /// `manual` stages proposals under `pending_dir` for review; `auto` promotes
+    /// them immediately into `rules_path` (subject to the TTL reaper).
+    pub approval_mode:        ApprovalMode,
+    /// Directory for pending (unapproved) AI proposals.
+    pub pending_dir:          String,
+    /// Approved AI rules older than this are removed by the reaper. Mtime-based.
+    pub approval_ttl_secs:    u64,
+    /// How often the reaper sweeps approved AI rule files.
+    pub reaper_interval_secs: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -180,17 +192,29 @@ pub enum AiProvider {
     Openai,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalMode {
+    Manual,
+    Auto,
+}
+
 impl Default for AiAdvisorConfig {
     fn default() -> Self {
         Self {
-            enabled:             false,
-            provider:            AiProvider::Anthropic,
-            api_key_env:         String::new(),
-            model:               String::new(),
-            trigger_threshold:   3,
-            cooldown_seconds:    300,
-            context_window_size: 20,
-            window_secs:         60,
+            enabled:              false,
+            provider:             AiProvider::Anthropic,
+            api_key_env:          String::new(),
+            model:                String::new(),
+            trigger_threshold:    3,
+            cooldown_seconds:     300,
+            context_window_size:  20,
+            window_secs:          60,
+            max_rules_per_fire:   3,
+            approval_mode:        ApprovalMode::Manual,
+            pending_dir:          "/etc/vectorguard/pending".into(),
+            approval_ttl_secs:    600,
+            reaper_interval_secs: 60,
         }
     }
 }

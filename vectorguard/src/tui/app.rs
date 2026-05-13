@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
+use crate::approval::ApprovalStore;
 use crate::event::{NormalizedEvent, Severity};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -28,11 +30,12 @@ pub enum Tab {
     Incidents,
     Config,
     ProcessTree,
+    Pending,
 }
 
 impl Tab {
     pub fn titles() -> Vec<&'static str> {
-        vec!["Dashboard", "Events", "Incidents", "Config", "Process Tree"]
+        vec!["Dashboard", "Events", "Incidents", "Config", "Process Tree", "AI Pending"]
     }
 
     pub fn index(&self) -> usize {
@@ -42,6 +45,7 @@ impl Tab {
             Tab::Incidents   => 2,
             Tab::Config      => 3,
             Tab::ProcessTree => 4,
+            Tab::Pending     => 5,
         }
     }
 
@@ -51,9 +55,21 @@ impl Tab {
             2 => Tab::Incidents,
             3 => Tab::Config,
             4 => Tab::ProcessTree,
+            5 => Tab::Pending,
             _ => Tab::Dashboard,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingRow {
+    pub id:          String,
+    pub name:        String,
+    pub action:      String,
+    pub description: String,
+    pub age_secs:    u64,
+    /// Full single-rule TOML body for the detail popup.
+    pub toml_body:   String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -107,6 +123,15 @@ pub struct App {
     pub config_editing:  bool,
     pub config_edit_buf: String,
     pub config_modified: bool,
+
+    // Pending AI proposals tab
+    pub approval_store:        Option<ApprovalStore>,
+    pub pending:               Vec<PendingRow>,
+    pub pending_scroll:        usize,
+    pub selected_pending:      Option<usize>,
+    pub pending_last_refresh:  Instant,
+    /// Toast string + when it should expire — surfaces accept/reject feedback.
+    pub pending_toast:         Option<(String, Instant)>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -157,6 +182,14 @@ pub struct ProcessNode {
 
 impl App {
     pub fn new(config_text: String, config_path: String) -> Self {
+        Self::with_approval(config_text, config_path, None)
+    }
+
+    pub fn with_approval(
+        config_text:    String,
+        config_path:    String,
+        approval_store: Option<ApprovalStore>,
+    ) -> Self {
         let fields = build_config_fields(&config_text);
         Self {
             state:          AppState::Running,
@@ -181,6 +214,84 @@ impl App {
             config_editing:  false,
             config_edit_buf: String::new(),
             config_modified: false,
+            approval_store,
+            pending:               Vec::new(),
+            pending_scroll:        0,
+            selected_pending:      None,
+            // Make first refresh fire on the first tick by setting epoch.
+            pending_last_refresh:  Instant::now() - Duration::from_secs(3600),
+            pending_toast:         None,
+        }
+    }
+
+    // ── Pending AI Proposals ──────────────────────────────────
+    /// Re-read the pending dir if more than `interval` has passed since last
+    /// refresh. Cheap (a small dir scan) and only runs when the store exists.
+    pub fn maybe_refresh_pending(&mut self, interval: Duration) {
+        let Some(ref store) = self.approval_store else { return; };
+        if self.pending_last_refresh.elapsed() < interval {
+            return;
+        }
+        self.pending_last_refresh = Instant::now();
+        let items = match store.list_pending() {
+            Ok(i)  => i,
+            Err(e) => {
+                tracing::warn!("TUI: list_pending failed: {}", e);
+                return;
+            }
+        };
+        let now = std::time::SystemTime::now();
+        self.pending = items.into_iter().map(|it| {
+            let age = now.duration_since(it.created_at)
+                .map(|d| d.as_secs()).unwrap_or(0);
+            let description = it.rule.description.clone().unwrap_or_default();
+            let action = format!("{:?}", it.rule.action).to_lowercase();
+            let toml_body = std::fs::read_to_string(&it.path).unwrap_or_default();
+            PendingRow {
+                id:          it.id,
+                name:        it.rule.name,
+                action,
+                description,
+                age_secs:    age,
+                toml_body,
+            }
+        }).collect();
+        // Keep the cursor valid if items vanished.
+        if self.pending_scroll >= self.pending.len() {
+            self.pending_scroll = self.pending.len().saturating_sub(1);
+        }
+    }
+
+    pub fn pending_accept_current(&mut self) {
+        let Some(ref store) = self.approval_store else { return; };
+        let Some(item) = self.pending.get(self.pending_scroll).cloned() else { return; };
+        match store.approve(&item.id) {
+            Ok(_)  => self.set_toast(format!("approved {}", item.name)),
+            Err(e) => self.set_toast(format!("approve error: {}", e)),
+        }
+        // Force a refresh next loop iteration
+        self.pending_last_refresh = Instant::now() - Duration::from_secs(3600);
+    }
+
+    pub fn pending_reject_current(&mut self) {
+        let Some(ref store) = self.approval_store else { return; };
+        let Some(item) = self.pending.get(self.pending_scroll).cloned() else { return; };
+        match store.reject(&item.id) {
+            Ok(_)  => self.set_toast(format!("rejected {}", item.name)),
+            Err(e) => self.set_toast(format!("reject error: {}", e)),
+        }
+        self.pending_last_refresh = Instant::now() - Duration::from_secs(3600);
+    }
+
+    fn set_toast(&mut self, msg: String) {
+        let until = Instant::now() + Duration::from_secs(3);
+        self.pending_toast = Some((msg, until));
+    }
+
+    pub fn current_toast(&self) -> Option<&str> {
+        match &self.pending_toast {
+            Some((msg, until)) if Instant::now() < *until => Some(msg.as_str()),
+            _ => None,
         }
     }
 
@@ -243,6 +354,7 @@ impl App {
             Tab::ProcessTree => { self.proc_scroll = self.proc_scroll.saturating_sub(1); }
             Tab::Incidents   => { self.incident_scroll = self.incident_scroll.saturating_sub(1); }
             Tab::Config      => { self.scroll_config_up(); }
+            Tab::Pending     => { self.pending_scroll = self.pending_scroll.saturating_sub(1); }
             _ => { self.event_scroll = self.event_scroll.saturating_sub(1); }
         }
     }
@@ -261,6 +373,11 @@ impl App {
                 }
             }
             Tab::Config => { self.scroll_config_down(); }
+            Tab::Pending => {
+                if self.pending_scroll + 1 < self.pending.len() {
+                    self.pending_scroll += 1;
+                }
+            }
             _ => {
                 let len = self.filtered_events().len();
                 if self.event_scroll + 1 < len {
@@ -278,6 +395,11 @@ impl App {
                     self.selected_incident = Some(self.incident_scroll);
                 }
             }
+            Tab::Pending => {
+                if !self.pending.is_empty() {
+                    self.selected_pending = Some(self.pending_scroll);
+                }
+            }
             _ => {
                 let len = self.filtered_events().len();
                 if len > 0 {
@@ -288,12 +410,15 @@ impl App {
     }
 
     pub fn close_detail(&mut self) {
-        self.selected_event = None;
+        self.selected_event    = None;
         self.selected_incident = None;
+        self.selected_pending  = None;
     }
 
     pub fn is_detail_open(&self) -> bool {
-        self.selected_event.is_some() || self.selected_incident.is_some()
+        self.selected_event.is_some()
+            || self.selected_incident.is_some()
+            || self.selected_pending.is_some()
     }
 
     pub fn cycle_incident_filter(&mut self) {

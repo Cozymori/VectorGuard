@@ -29,5 +29,8 @@ prost-types = "0.13"
 aya = { version = "0.13", features = ["async_tokio"] }
 aya-log = "0.2"
 
+[dev-dependencies]
+tempfile = "3"
+
 [build-dependencies]
 tonic-build = "0.12"

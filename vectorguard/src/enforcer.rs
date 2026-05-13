@@ -127,6 +127,7 @@ mod tests {
         Rule {
             name:              name.into(),
             action:            RuleAction::Block,
+            description:       None,
             match_process:     vec![],
             match_path_prefix: vec![],
             match_exec_path:   vec![],

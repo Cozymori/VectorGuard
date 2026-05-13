@@ -80,7 +80,6 @@ async fn run_headless(event_rx: &mut Option<mpsc::Receiver<NormalizedEvent>>) ->
             }
         }
     }
-    Ok(())
 }
 
 async fn run_loop(
@@ -89,8 +88,10 @@ async fn run_loop(
     event_rx: &mut Option<mpsc::Receiver<NormalizedEvent>>,
 ) -> Result<()> {
     let mut key_handler = EventHandler::new(50); // 50ms polling
+    let pending_refresh = std::time::Duration::from_millis(500);
 
     loop {
+        app.maybe_refresh_pending(pending_refresh);
         terminal.draw(|f| render::draw(f, &app))?;
 
         tokio::select! {

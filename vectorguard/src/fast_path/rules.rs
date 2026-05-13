@@ -15,6 +15,11 @@ pub struct Rule {
     pub name:   String,
     pub action: RuleAction,
 
+    /// Optional free-text rationale. Not used for matching; surfaced in the TUI
+    /// pending-approval view so reviewers can see why the advisor proposed a rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+
     // Conditions — all configured conditions must match (AND logic)
     /// Glob pattern for process binary name (e.g. "nginx", "py*")
     #[serde(default)]
@@ -96,6 +101,7 @@ impl RuleSet {
             Rule {
                 name:              "block-shadow-access".into(),
                 action:            RuleAction::Block,
+                description:       None,
                 match_process:     vec![],
                 match_path_prefix: vec![
                     "/etc/shadow".into(),
@@ -109,6 +115,7 @@ impl RuleSet {
             Rule {
                 name:              "alert-shell-exec-by-service".into(),
                 action:            RuleAction::Alert,
+                description:       None,
                 match_process:     vec!["nginx".into(), "postgres".into(), "apache2".into()],
                 match_path_prefix: vec![],
                 match_exec_path:   vec![
@@ -124,6 +131,7 @@ impl RuleSet {
             Rule {
                 name:              "alert-outbound-unusual-port".into(),
                 action:            RuleAction::Alert,
+                description:       None,
                 match_process:     vec![],
                 match_path_prefix: vec![],
                 match_exec_path:   vec![],
@@ -133,6 +141,7 @@ impl RuleSet {
             Rule {
                 name:              "alert-root-exec".into(),
                 action:            RuleAction::Alert,
+                description:       None,
                 match_process:     vec![],
                 match_path_prefix: vec![],
                 match_exec_path:   vec!["/usr/bin/wget".into(), "/usr/bin/curl".into(), "/usr/bin/nc".into()],
@@ -302,6 +311,7 @@ mod tests {
             rules: vec![Rule {
                 name:              "alert-root".into(),
                 action:            RuleAction::Alert,
+                description:       None,
                 match_process:     vec![],
                 match_path_prefix: vec![],
                 match_exec_path:   vec![],
@@ -321,6 +331,7 @@ mod tests {
             rules: vec![Rule {
                 name:              "block-py".into(),
                 action:            RuleAction::Block,
+                description:       None,
                 match_process:     vec!["py*".into()],
                 match_path_prefix: vec![],
                 match_exec_path:   vec![],
@@ -339,12 +350,14 @@ mod tests {
             rules: vec![
                 Rule {
                     name: "alert".into(), action: RuleAction::Alert,
+                    description: None,
                     match_process: vec!["nginx".into()],
                     match_path_prefix: vec![], match_exec_path: vec![],
                     match_port: vec![], match_uid: None,
                 },
                 Rule {
                     name: "block".into(), action: RuleAction::Block,
+                    description: None,
                     match_process: vec!["nginx".into()],
                     match_path_prefix: vec![], match_exec_path: vec![],
                     match_port: vec![], match_uid: None,
@@ -360,6 +373,7 @@ mod tests {
             rules: vec![Rule {
                 name:              "my-custom-rule".into(),
                 action:            RuleAction::Block,
+                description:       None,
                 match_process:     vec!["bash".into()],
                 match_path_prefix: vec![],
                 match_exec_path:   vec![],
@@ -377,6 +391,7 @@ mod tests {
             rules: vec![Rule {
                 name:              "log-curl".into(),
                 action:            RuleAction::Log,
+                description:       None,
                 match_process:     vec!["curl".into()],
                 match_path_prefix: vec![],
                 match_exec_path:   vec![],

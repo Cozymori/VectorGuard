@@ -5,6 +5,7 @@
 pub mod collector;
 pub mod enforcer;
 pub mod ai_advisor;
+pub mod approval;
 pub mod config;
 pub mod event;
 pub mod adapter;

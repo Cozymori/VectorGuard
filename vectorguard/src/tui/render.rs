@@ -33,6 +33,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Tab::Incidents   => draw_incidents(f, app, chunks[1]),
         Tab::Config      => draw_config(f, app, chunks[1]),
         Tab::ProcessTree => draw_process_tree(f, app, chunks[1]),
+        Tab::Pending     => draw_pending(f, app, chunks[1]),
     }
 
     draw_footer(f, app, chunks[2]);
@@ -47,6 +48,10 @@ pub fn draw(f: &mut Frame, app: &App) {
         let events = app.filtered_events();
         if let Some(ev) = events.get(idx) {
             draw_event_detail(f, ev, area);
+        }
+    } else if let Some(idx) = app.selected_pending {
+        if let Some(p) = app.pending.get(idx) {
+            draw_pending_detail(f, p, area);
         }
     }
 }
@@ -530,6 +535,128 @@ fn draw_process_tree(f: &mut Frame, app: &App, area: Rect) {
     f.render_stateful_widget(table, area, &mut state);
 }
 
+// ── Pending AI Proposals Tab ──────────────────────────────────
+fn draw_pending(f: &mut Frame, app: &App, area: Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .split(area);
+
+    let header = Row::new(vec!["Age", "Rule", "Action", "Description"])
+        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .height(1);
+
+    let rows: Vec<Row> = app.pending.iter().map(|p| {
+        let action_col = action_color(&p.action);
+        Row::new(vec![
+            Cell::from(format_age(p.age_secs)),
+            Cell::from(p.name.as_str()),
+            Cell::from(Span::styled(p.action.as_str(), Style::default().fg(action_col))),
+            Cell::from(p.description.as_str()),
+        ]).height(1)
+    }).collect();
+
+    let title = if app.approval_store.is_none() {
+        " AI Pending (approval store unavailable) ".to_string()
+    } else {
+        format!(" AI Pending ({}) — a:accept r:reject v/Enter:view ", app.pending.len())
+    };
+
+    let mut state = TableState::default();
+    if !app.pending.is_empty() {
+        state.select(Some(app.pending_scroll));
+    }
+
+    let table = Table::new(rows, [
+        Constraint::Length(8),
+        Constraint::Length(32),
+        Constraint::Length(8),
+        Constraint::Min(20),
+    ])
+    .header(header)
+    .block(Block::default().borders(Borders::ALL).title(title)
+        .style(Style::default().bg(Color::Black)))
+    .row_highlight_style(Style::default()
+        .bg(Color::DarkGray)
+        .add_modifier(Modifier::BOLD));
+
+    f.render_stateful_widget(table, chunks[0], &mut state);
+
+    // Toast (recent accept/reject) takes precedence over empty-state hint.
+    if let Some(msg) = app.current_toast() {
+        let p = Paragraph::new(Span::styled(
+            format!(" {}", msg),
+            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+        ));
+        f.render_widget(p, chunks[1]);
+    } else if app.pending.is_empty() && app.approval_store.is_some() {
+        let p = Paragraph::new(Span::styled(
+            " No pending AI proposals. Enable [ai_advisor] and trigger a repeated pattern to populate.",
+            Style::default().fg(Color::DarkGray),
+        ));
+        f.render_widget(p, chunks[1]);
+    }
+}
+
+fn draw_pending_detail(f: &mut Frame, p: &super::app::PendingRow, area: Rect) {
+    let popup_area = centered_rect(75, 70, area);
+    f.render_widget(Clear, popup_area);
+
+    let action_col = action_color(&p.action);
+    let mut text = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  ID         : ", Style::default().fg(Color::DarkGray)),
+            Span::raw(p.id.as_str()),
+        ]),
+        Line::from(vec![
+            Span::styled("  Rule       : ", Style::default().fg(Color::DarkGray)),
+            Span::styled(p.name.as_str(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(vec![
+            Span::styled("  Action     : ", Style::default().fg(Color::DarkGray)),
+            Span::styled(p.action.as_str(), Style::default().fg(action_col).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(vec![
+            Span::styled("  Age        : ", Style::default().fg(Color::DarkGray)),
+            Span::raw(format_age(p.age_secs)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("  Why proposed:", Style::default().fg(Color::DarkGray))),
+        Line::from(Span::styled(
+            format!("  {}", if p.description.is_empty() { "(none provided)" } else { p.description.as_str() }),
+            Style::default().fg(Color::Yellow),
+        )),
+        Line::from(""),
+        Line::from(Span::styled("  TOML body:", Style::default().fg(Color::DarkGray))),
+    ];
+    for line in p.toml_body.lines().take(20) {
+        text.push(Line::from(format!("  {}", line)));
+    }
+    text.push(Line::from(""));
+    text.push(Line::from(Span::styled(
+        "  a:accept  r:reject  Esc/Enter:close",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    let popup = Paragraph::new(text)
+        .wrap(Wrap { trim: false })
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" AI Proposal ")
+                .border_style(Style::default().fg(Color::Cyan))
+                .style(Style::default().bg(Color::Black)),
+        );
+    f.render_widget(popup, popup_area);
+}
+
+fn format_age(secs: u64) -> String {
+    if secs < 60 { format!("{}s", secs) }
+    else if secs < 3600 { format!("{}m", secs / 60) }
+    else { format!("{}h", secs / 3600) }
+}
+
 // ── Event Detail Popup ────────────────────────────────────────
 fn draw_event_detail(f: &mut Frame, ev: &super::app::EventRow, area: Rect) {
     let popup_area = centered_rect(65, 55, area);
@@ -648,7 +775,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![
             Span::styled(" q", Style::default().fg(Color::Yellow)),
             Span::raw(":quit  "),
-            Span::styled("Tab/1-5", Style::default().fg(Color::Yellow)),
+            Span::styled("Tab/1-6", Style::default().fg(Color::Yellow)),
             Span::raw(":switch  "),
             Span::styled("↑↓/jk", Style::default().fg(Color::Yellow)),
             Span::raw(":scroll  "),
@@ -657,11 +784,26 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
             Span::styled("f", Style::default().fg(Color::Yellow)),
             Span::raw(":filter(All/Blocked/Alerted)"),
         ])
+    } else if app.active_tab == Tab::Pending {
+        Line::from(vec![
+            Span::styled(" q", Style::default().fg(Color::Yellow)),
+            Span::raw(":quit  "),
+            Span::styled("Tab/1-6", Style::default().fg(Color::Yellow)),
+            Span::raw(":switch  "),
+            Span::styled("↑↓/jk", Style::default().fg(Color::Yellow)),
+            Span::raw(":scroll  "),
+            Span::styled("a", Style::default().fg(Color::Green)),
+            Span::raw(":accept  "),
+            Span::styled("r", Style::default().fg(Color::Red)),
+            Span::raw(":reject  "),
+            Span::styled("v/Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(":view"),
+        ])
     } else {
         Line::from(vec![
             Span::styled(" q", Style::default().fg(Color::Yellow)),
             Span::raw(":quit  "),
-            Span::styled("Tab/1-5", Style::default().fg(Color::Yellow)),
+            Span::styled("Tab/1-6", Style::default().fg(Color::Yellow)),
             Span::raw(":switch  "),
             Span::styled("↑↓/jk", Style::default().fg(Color::Yellow)),
             Span::raw(":scroll  "),

@@ -101,11 +101,12 @@ impl EventHandler {
                 KeyCode::Char('3')         => app.active_tab = Tab::Incidents,
                 KeyCode::Char('4')         => app.active_tab = Tab::Config,
                 KeyCode::Char('5')         => app.active_tab = Tab::ProcessTree,
+                KeyCode::Char('6')         => app.active_tab = Tab::Pending,
                 KeyCode::Up   | KeyCode::Char('k') => app.scroll_up(),
                 KeyCode::Down | KeyCode::Char('j') => app.scroll_down(),
                 KeyCode::Enter => {
                     match app.active_tab {
-                        Tab::Events | Tab::Incidents => app.open_detail(),
+                        Tab::Events | Tab::Incidents | Tab::Pending => app.open_detail(),
                         Tab::Config => app.start_config_edit(),
                         _ => {}
                     }
@@ -115,6 +116,15 @@ impl EventHandler {
                 }
                 KeyCode::Char('s') if app.active_tab == Tab::Config => {
                     app.save_config();
+                }
+                KeyCode::Char('a') if app.active_tab == Tab::Pending => {
+                    app.pending_accept_current();
+                }
+                KeyCode::Char('r') if app.active_tab == Tab::Pending => {
+                    app.pending_reject_current();
+                }
+                KeyCode::Char('v') if app.active_tab == Tab::Pending => {
+                    app.open_detail();
                 }
                 KeyCode::Char('f') => {
                     if app.active_tab == Tab::Incidents {

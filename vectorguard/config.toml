@@ -73,6 +73,19 @@ cooldown_seconds     = 300                   # min gap between API calls per pat
 context_window_size  = 20                    # recent events sent as context
 window_secs          = 60                    # sliding window duration
 
+# ── AI Advisor Approval ─────────────────────────────────────
+# Proposed rules go through an approval flow before they reach the daemon:
+#   manual → staged under `pending_dir`, surfaced in the TUI's "AI Pending" tab
+#            and via `vectorguard list-pending` / `approve <id>` / `reject <id>`
+#   auto   → written straight into rules_path as `ai-approved-*.toml`
+# A reaper sweeps `ai-approved-*.toml` files older than approval_ttl_secs so
+# AI-generated rules don't accumulate indefinitely.
+max_rules_per_fire   = 3                     # cap rules accepted per LLM call
+approval_mode        = "manual"              # manual | auto
+pending_dir          = "/etc/vectorguard/pending"
+approval_ttl_secs    = 600                   # remove approved AI rules after this
+reaper_interval_secs = 60                    # how often the reaper sweeps
+
 # ── TUI ─────────────────────────────────────────────────────
 [tui]
 refresh_rate_ms = 200
